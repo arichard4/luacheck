@@ -77,6 +77,25 @@ function core_utils.each_statement(chstate, tags_array, callback, ...)
    end
 end
 
+local function_call_tags = utils.array_to_set({"Call", "Invoke"})
+
+-- determines whether the given ast node contains a function call
+function core_utils.contains_call(node)
+   if function_call_tags[node.tag] then
+      return true
+   end
+
+   if node.tag ~= "Function" then
+      for _, sub_node in ipairs(node) do
+         if type(sub_node) == 'table' and core_utils.contains_call(sub_node) then
+            return true
+         end
+      end
+   end
+
+   return false
+end
+
 local function location_comparator(warning1, warning2)
    if warning1.line ~= warning2.line then
       return warning1.line < warning2.line

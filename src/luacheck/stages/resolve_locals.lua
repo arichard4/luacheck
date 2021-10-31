@@ -1,3 +1,5 @@
+local core_utils = require "luacheck.core_utils"
+
 local stage = {}
 
 -- The main part of analysis is connecting assignments to locals or upvalues
@@ -78,22 +80,6 @@ local function in_scope(var, index)
    return (var.scope_start <= index) and (index <= var.scope_end)
 end
 
-local function contains_call(node)
-   if node.tag == "Call" or node.tag == "Invoke" then
-      return true
-   end
-
-   if node.tag ~= "Function" then
-      for _, sub_node in ipairs(node) do
-         if type(sub_node) == 'table' and contains_call(sub_node) then
-            return true
-         end
-      end
-   end
-
-   return false
-end
-
 local function is_circular_reference(item, var)
    -- No support for matching multiple assignment to the specific assignment
    if not item.lhs or #item.lhs ~= 1 or not item.rhs or #item.rhs ~= 1 then
@@ -103,12 +89,12 @@ local function is_circular_reference(item, var)
    -- Case t[t.function()] = t.func()
    -- Functions can have side-effects, so this isn't purely circular
    local right_assignment = item.rhs[1]
-   if contains_call(right_assignment) then
+   if core_utils.contains_call(right_assignment) then
       return false
    end
 
    local left_assignment = item.lhs[1]
-   if contains_call(left_assignment) then
+   if core_utils.contains_call(left_assignment) then
       return false
    end
    local node = left_assignment[1]
