@@ -21,3 +21,18 @@ y = 6
 local z = 5;
 (function() z = 4 end)()
 z = 6
+
+foo[foo] = 1
+foo[1] = foo
+foo[foo] = foo
+function foo.meta()
+   return function() print(foo) end
+end
+
+local t = {}
+function t.func() print(t) return {val = 1} end
+t[t] = t.func().val + 1
+
+local s = {}
+function s:func() print(self) return {val = 1} end
+s[s] = s:func().val + 1
