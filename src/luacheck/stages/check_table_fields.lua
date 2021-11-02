@@ -23,8 +23,10 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
    -- Can be from local x = {} OR "local x; x = {}"
    local function new_local_table(table_name)
       current_tables[table_name] = {
+         -- definitely_set_keys sets store a mapping from key => {table_name, node}; the node has the line/column info
          definitely_set_keys = {},
          -- A list of keys which are possibly set; since variables or function returns can be nil, we can't say for sure
+         -- maybe_set_keys and accessed keys are mappings from key => true|nil
          maybe_set_keys = {},
          accessed_keys = {},
          -- For a variable key, it's impossible to reliably get the value; any given key could be set or accessed
@@ -33,7 +35,10 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
          -- If this table is an upvalue reference, any field could potentially be accessed after the end of this scope
          -- A created function could be used to access the table from outside the current file-or-func scope
          -- So at the scope's end we can't check for unused keys
-         upvalue_reference = false
+         upvalue_reference = false,
+         -- Multiple variable names that point at the same underlying table
+         -- e.g. local x = {}; local t = x
+         aliases = {[table_name] = true}
       }
    end
 
@@ -43,17 +48,23 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
    -- * there is a function call
    -- * there is a scope change (including control flow scope and return)
    local function wipe_table_data(table_name)
-      current_tables[table_name] = nil
+      local info_table = current_tables[table_name]
+      for alias in pairs(info_table.aliases) do
+         current_tables[alias] = nil
+      end
    end
 
    -- Called when a table's field's value is no longer accessible
    -- Either the table is gone, or the field has been overwritten
-   local function maybe_warn_unused(table_name, key, range)
+   -- Table info can be different from the value of current_tables[table_name]
+   -- In the case that the original table was removed but an alias is still relevant
+   local function maybe_warn_unused(table_info, key, data)
+      local table_name, ast_node = data[1], data[2]
       -- Warn if there were definitely no accesses for this value
-      if not current_tables[table_name].accessed_keys[key]
-         and not current_tables[table_name].potentially_all_accessed
+      if not table_info.accessed_keys[key]
+         and not table_info.potentially_all_accessed
       then
-         chstate:warn_range("315", range, {
+         chstate:warn_range("315", ast_node, {
             field = key,
             name = table_name
          })
@@ -88,6 +99,7 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
 
    -- Called when setting a new key for a known local table
    local function set_key(table_name, key_node, assigned_val, in_init)
+      local table_info = current_tables[table_name]
       -- Constant key
       if key_node.tag == "Number" or key_node.tag == "String" then
          local key = key_node[1]
@@ -95,24 +107,24 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
             key = tonumber(key)
          end
          -- Don't report duplicate keys in the init; other module handles that
-         if current_tables[table_name].definitely_set_keys[key] and not in_init then
-            maybe_warn_unused(table_name, key, current_tables[table_name].definitely_set_keys[key])
+         if table_info.definitely_set_keys[key] and not in_init then
+            maybe_warn_unused(table_info, key, table_info.definitely_set_keys[key])
          end
-         current_tables[table_name].accessed_keys[key] = nil
+         table_info.accessed_keys[key] = nil
          -- Variable set; variable could be nil
          if assigned_val.tag == "Id" then
-            current_tables[table_name].maybe_set_keys[key] = key_node
-            current_tables[table_name].definitely_set_keys[key] = nil
+            table_info.maybe_set_keys[key] = true
+            table_info.definitely_set_keys[key] = nil
          elseif assigned_val.tag == "Nil" then
-            current_tables[table_name].definitely_set_keys[key] = nil
-            current_tables[table_name].maybe_set_keys[key] = nil
+            table_info.definitely_set_keys[key] = nil
+            table_info.maybe_set_keys[key] = nil
          else
-            current_tables[table_name].definitely_set_keys[key] = key_node
-            current_tables[table_name].maybe_set_keys[key] = nil
+            table_info.definitely_set_keys[key] = {table_name, key_node}
+            table_info.maybe_set_keys[key] = nil
          end
       else
          -- variable key
-         current_tables[table_name].potentially_all_set = true
+         table_info.potentially_all_set = true
       end
    end
 
@@ -133,18 +145,23 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
       end
    end
 
-   -- Called when a table value is no longer accessible
+   -- Called when a table variable is no longer accessible
    -- i.e. the scope has ended or the variable has been overwritten
-   local function end_table_value(table_name)
-      for key, value in pairs(current_tables[table_name].definitely_set_keys) do
-         maybe_warn_unused(table_name, key, value)
+   local function end_table_variable(table_name)
+      local table_info = current_tables[table_name]
+      table_info.aliases[table_name] = nil
+
+      if next(table_info.aliases) == nil then
+         for key, value in pairs(table_info.definitely_set_keys) do
+            maybe_warn_unused(table_info, key, value)
+         end
       end
 
-      wipe_table_data(table_name)
+      current_tables[table_name] = nil
    end
 
    -- Called on a new scope or function call
-   -- Unlike end_table_value, this assumes that any and all existing tables values
+   -- Unlike end_table_variable, this assumes that any and all existing tables values
    -- Can potentially be accessed later on, and so doesn't warn about unused values
    local function stop_tracking_tables()
       for table_name in pairs(current_tables) do
@@ -178,7 +195,7 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
 
       for table_name, table_info in pairs(current_tables) do
          if not table_info.upvalue_reference then
-            end_table_value(table_name)
+            end_table_variable(table_name)
          end
       end
    end
@@ -203,7 +220,8 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
 
    -- Records accesses to the table as a whole, i.e. for table x, either t[x] = val or x = t
    -- For the former, we stop tracking the table; for the latter, we mark x and t down as aliases if x is a local
-   local function record_table_accesses(node)
+   -- For existing table t, in "local x = t", x is passed in as the aliased node
+   local function record_table_accesses(node, aliased_node)
       -- t[x or y] = val; x = t1 or t2
       if node[1] == "and" or node[1] == "or" then
          for _, sub_node in ipairs(node) do
@@ -226,10 +244,13 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
          end
       end
 
-      -- TODO: For the "Set" case, it would be nice to try to track
-      -- the variables as aliases; i.e. local x = t makes x and t aliases
       if node.var and current_tables[node.var.name] then
-         wipe_table_data(node.var.name)
+         if aliased_node and aliased_node.var then
+            current_tables[aliased_node.var.name] = current_tables[node.var.name]
+            current_tables[aliased_node.var.name].aliases[aliased_node.var.name] = true
+         else
+            wipe_table_data(node.var.name)
+         end
       end
    end
 
@@ -317,10 +338,10 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
             -- Case: $existing_table = new_value
             -- Complete overwrite of previous value
             if item.tag == "Set" and lhs_node.var and current_tables[lhs_node.var.name] then
-               end_table_value(lhs_node.var.name)
+               end_table_variable(lhs_node.var.name)
             end
 
-            record_table_accesses(rhs_node)
+            record_table_accesses(rhs_node, lhs_node)
 
             -- Case: local $table = {} or local $table; $table = {}
             -- New table assignment

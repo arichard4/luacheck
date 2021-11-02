@@ -336,11 +336,47 @@ return t
       ]])
    end)
 
-   -- TODO: Improve this to reduce false negatives
-   it("doesn't warn on non-atomic key set to a table that is never accessed", function()
+   it("handles aliases correctly", function()
+      assert_warnings({
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 1},
+         {code = "325", line = 2, column = 10, end_column = 10, name = 'x', field = 'z'},
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y'},
+         {code = "315", line = 6, column = 3, end_column = 3, name = 't', field = 'y'},
+         {code = "315", line = 7, column = 3, end_column = 3, name = 't', field = 1},
+         {code = "325", line = 7, column = 10, end_column = 10, name = 't', field = 'z'},
+      }, [[
+local x = {}
+x[1] = x.z
+x.y = 1
+x.x = 1
+local t = x
+t.y = 1
+t[1] = t.z
+return t.x
+      ]])
+   end)
+
+   it("an alias being overwritten doesn't end processing for the other aliases", function()
+      assert_warnings({
+         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 1},
+      }, [[
+local x = {}
+local t = x
+t[2] = 2
+t = 1
+x[1] = 1
+x[1] = 1
+return x, t
+      ]])
+   end)
+
+   it("any alias being externally referenced blocks unused warnings", function()
       assert_warnings({}, [[
-local t = {}
-t[1+1] = 1
+local t
+function inner()
+   local x = {1}
+   t = x
+end
       ]])
    end)
 
@@ -399,20 +435,6 @@ local a = {1}
 t[2] = a[1 + 1]
 a.y = 1 -- Ideally, would be reported as unused
 return t
-      ]])
-   end)
-
-   -- TODO: Improve this to reduce false negatives
-   it("stops checking if the table is assigned to another variable", function()
-      assert_warnings({
-         {code = "325", line = 2, column = 10, end_column = 10, name = 'x', field = 'z'}
-      }, [[
-local x = {}
-x[1] = x.z
-x.y = 1
-local t = x -- Ideally, t and x would be tracked as aliases
-x.y = 1
-x[1] = x.z
       ]])
    end)
 
