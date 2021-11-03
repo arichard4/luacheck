@@ -70,6 +70,42 @@ end
       ]])
    end)
 
+   it("handles upvalue mutations", function()
+      assert_warnings({}, [[
+local x = {}
+x.y = 1
+function x.func() x.z = 1 end
+      ]])
+   end)
+
+   it("handles upvalue sets", function()
+      assert_warnings({}, [[
+local x = {}
+x.y = 1
+function x.func() x = 1 end
+      ]])
+   end)
+
+   it("handles complicated upvalue sets", function()
+      assert_warnings({}, [[
+local x = {}
+x[1] = {}
+x[1][1] = function() x = {} end
+x[1][1]()
+x[1] = 1
+      ]])
+   end)
+
+   it("handles complicated upvalue mutations", function()
+      assert_warnings({}, [[
+local x = {}
+x[1] = {}
+x[1][1] = function() x[1][1] = 2 end
+x[1][1]()
+print(x[1][1])
+      ]])
+   end)
+
    -- Handled separately, in detect_unused_fields
    it("doesn't detect duplicate keys in initialization", function()
       assert_warnings({}, [[
@@ -380,114 +416,29 @@ end
       ]])
    end)
 
-   -- TODO: Improve this to reduce false negatives
-   it("does nothing for globals", function()
-      assert_warnings({}, [[
-x = {}
-x[1] = 1
-x[2] = x.y
-x[1] = 1
-
-y[1] = 1
-y[2] = x.y
-y[1] = 1
-      ]])
-   end)
-
-   -- TODO: Improve this to reduce false negatives
-   it("does nothing for table parameters that aren't declared in scope", function()
-      assert_warnings({}, [[
-function func(x)
-   x[1] = x.z
-   x[1] = 1
-end
-      ]])
-   end)
-
-   -- TODO: Improve this to reduce false negatives
-   it("assumes that all non-atomic values can be nil", function()
+   it("handles rhs/lhs order correctly", function()
       assert_warnings({
-         {line = 3, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', }
+         {code = "325", line = 5, column = 10, end_column = 10, name = 'x', field = 3},
       }, [[
 local x = {}
-local var = 1
-x.y = 1
-x.y = var
-x.z = x.y
-x.y = var
-x.y = 1 -- Ideally, would be reported as an overwrite, as var is non-nil
-
-return x
-      ]])
-   end)
-
-   -- TODO: Improve this to reduce false negatives
-   it("assumes that non-constant keys leave all table keys permanently potentially accessed", function()
-      assert_warnings({}, [[
-local var = 1
-
-local x = {1}
-local t = {}
-t[1] = x[var]
-x.y = 1 -- Ideally, would be reported as unused
-
-local a = {1}
-t[2] = a[1 + 1]
-a.y = 1 -- Ideally, would be reported as unused
-return t
-      ]])
-   end)
-
-   -- TODO: Improve this to reduce false negatives
-   -- See comments in the file
-   it("stops checking if a function is called", function()
-      assert_warnings({
-         {line = 8, column = 3, name = 'y', end_column = 3, field = 'x', code = '315', },
-         {line = 8, column = 9, name = 'y', end_column = 9, field = 'a', code = '325', },
-         {line = 14, column = 9, name = 't', end_column = 9, field = 'a', code = '325', },
-      }, [[
-local x = {}
-x.y = 1
-print("Unrelated text")
-x.y = 2
-x[1] = x.z
-
-local y = {}
-y.x = y.a
-y.x = 1
-function y:func() return 1 end
-y:func()
+x[1] = 1
+x[2] = 2
+x[1], x[2] = x[2], x[1]
+x[3] = x[3]
 
 local t = {}
-t.x = t.a
-local var = 'func'
-t.x = y[var]() + 1
+t[1] = 1
+t[t[1] ] = 2
+return x, t
       ]])
    end)
 
-   -- TODO: Improve this to reduce false negatives
-   -- See comments in the file
-   it("stops checking a table definition if we change scopes", function()
+   it("assumes that tables initialized from varargs can have arbitary keys set", function()
       assert_warnings({
-         {code = "325", line = 3, column = 10, end_column = 10, name = 'x', field = 'z'},
-         {code = "315", line = 11, column = 6, end_column = 6, name = 'x', field = 1},
-         {code = "325", line = 13, column = 13, end_column = 13, name = 'x', field = 'z'},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
       }, [[
-local x = {}
-x.y = 1
-x[1] = x.z
-if true then
-   x.y = 2
-   x[2] = x.a
-end
-
-if true then
-   x = {}
-   x[1] = 1
-   x[1] = 1
-   x[3] = x.z
-end
-x[1] = x.z
+local x = {...}
+x.y = x[2]
       ]])
    end)
 end)
