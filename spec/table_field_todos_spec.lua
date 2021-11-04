@@ -66,22 +66,6 @@ end
       ]])
    end)
 
-   it("assumes that non-constant keys leave all table keys permanently potentially accessed", function()
-      assert_warnings({}, [[
-local var = 1
-
-local x = {1}
-local t = {}
-t[1] = x[var]
-x.y = 1 -- Ideally, would be reported as unused
-
-local a = {1}
-t[2] = a[1 + 1]
-a.y = 1 -- Ideally, would be reported as unused
-return t
-      ]])
-   end)
-
    -- See comments in the file
    it("stops checking a table definition if we change scopes", function()
       assert_warnings({

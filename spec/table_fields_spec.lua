@@ -115,6 +115,15 @@ return x,y
       ]])
    end)
 
+   -- Handled separately, in detect_unused_fields
+   it("doesn't warn on unused fields of parameters", function()
+      assert_warnings({}, [[
+local function func(x)
+   x = {1}
+end
+      ]])
+   end)
+
    it("handles table assignments", function()
       assert_warnings({}, [[
 function new_scope()
@@ -443,4 +452,36 @@ local x = {...}
 x.y = x[2]
       ]])
    end)
+
+   it("catches unused writes after a non-atomic access", function()
+      assert_warnings({
+         {code = "315", line = 6, column = 3, end_column = 3, name = 'x', field = 'y'},
+         {code = "315", line = 10, column = 3, end_column = 3, name = 'a', field = 'y'},
+      }, [[
+local var = 1
+
+local x = {1}
+local t = {}
+t[1] = x[var]
+x.y = 1
+
+local a = {1}
+t[2] = a[1 + 1]
+a.y = 1
+return t
+      ]])
+   end)
+
+   it("accesses are not forever", function()
+      assert_warnings({
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 2},
+         {code = "315", line = 4, column = 3, end_column = 3, name = 'x', field = 1},
+      }, [[
+local x = {}
+x[1] = 1
+x[2] = x[1]
+x[1] = 1
+      ]])
+   end)
+
 end)

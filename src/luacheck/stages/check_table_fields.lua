@@ -16,24 +16,27 @@ local control_flow_tags = utils.array_to_set(
 
 -- Steps through the function or file scope one item at a time
 -- At each point, tracking for each local table which fields have been set
-local function detect_unused_table_fields(chstate, func_or_file_scope)
+local function detect_unused_table_fields(chstate, func_or_file_scope, external_references)
    -- A list of all local variables that are assigned tables
    local current_tables = {}
+
+   -- External references is:
    -- A list of all local variables that are (1) upvalues from created functions,
-   -- or (2) upvalues from outside the current scope
-   local external_references = {}
+   -- or (2) upvalues from outside the current scope, or (3) parameters passed in
 
    -- Start keeping track of a local table
    -- Can be from local x = {} OR "local x; x = {}"
    local function new_local_table(table_name)
       current_tables[table_name] = {
-         -- set_keys sets store a mapping from key => {table_name, key_node, value_node}; the node has the line/column info
+         -- set_keys sets store a mapping from key => {table_name, key_node, value_node}
+         -- the nodes store the line/column info
          set_keys = {},
-         -- accessed keys is a mappings from key => true|nil
+         -- accessed keys is a mappings from key => key_node
          accessed_keys = {},
          -- For a variable key, it's impossible to reliably get the value; any given key could be set or accessed
-         potentially_all_set = false,
-         potentially_all_accessed = false,
+         -- Set to the node responsible when truthy
+         potentially_all_set = nil,
+         potentially_all_accessed = nil,
          -- Multiple variable names that point at the same underlying table
          -- e.g. local x = {}; local t = x
          aliases = {[table_name] = true}
@@ -56,15 +59,17 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
    -- Either the table is gone, or the field has been overwritten
    -- Table info can be different from the value of current_tables[table_name]
    -- In the case that the original table was removed but an alias is still relevant
-   local function maybe_warn_unused(table_info, key, data)
-      local table_name, ast_node = data[1], data[2]
+   local function maybe_warn_unused(table_info, key, set_data)
+      local set_table_name, set_node = set_data[1], set_data[2]
+      local access_node = table_info.accessed_keys[key]
+      local all_access_node = table_info.potentially_all_accessed
       -- Warn if there were definitely no accesses for this value
-      if not table_info.accessed_keys[key]
-         and not table_info.potentially_all_accessed
+      if (not access_node or access_node.line < set_node.line)
+         and (not all_access_node or all_access_node.line < set_node.line)
       then
-         chstate:warn_range("315", ast_node, {
+         chstate:warn_range("315", set_node, {
             field = key,
-            name = table_name
+            name = set_table_name
          })
       end
    end
@@ -72,9 +77,14 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
    -- Called on accessing a table's field
    local function maybe_warn_undefined(table_name, key, range)
       -- Warn if the field is definitely not set
-      if (not current_tables[table_name].set_keys[key]
-            or current_tables[table_name].set_keys[key][3].tag == "Nil")
-         and not current_tables[table_name].potentially_all_set
+      local set_data = current_tables[table_name].set_keys[key]
+      local set_node, set_val
+      if set_data then
+         set_node, set_val = set_data[2], set_data[3]
+      end
+      local all_set = current_tables[table_name].potentially_all_set
+      if (not set_data and not all_set)
+         or (set_data and set_val.tag == "Nil" and (not all_set or set_node.line > all_set.line))
       then
          chstate:warn_range("325", range, {
             field = key,
@@ -86,9 +96,14 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
    -- Called on accessing a table's field with a variable
    -- Can only warn if the table is known to be empty
    local function maybe_warn_undefined_var_key(table_name, var_key_name, range)
-      if next(current_tables[table_name].set_keys) == nil
-         and not current_tables[table_name].potentially_all_set
-      then
+      -- Are there any non-nil keys at all?
+      local potentially_set = not not current_tables[table_name].potentially_all_set
+      for _, set_data in pairs(current_tables[table_name].set_keys) do
+         if set_data.tag ~= "Nil" then
+            potentially_set = true
+         end
+      end
+      if not potentially_set then
          chstate:warn_range("325", range, {
             field = var_key_name,
             name = table_name
@@ -118,7 +133,9 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
          table_info.set_keys[key] = {table_name, key_node, assigned_val}
       else
          -- variable key
-         table_info.potentially_all_set = true
+         if assigned_val.tag ~= "Nil" then
+            table_info.potentially_all_set = key_node
+         end
       end
    end
 
@@ -130,12 +147,12 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
             key = tonumber(key)
          end
          maybe_warn_undefined(table_name, key, key_node)
-         current_tables[table_name].accessed_keys[key] = true
+         current_tables[table_name].accessed_keys[key] = key_node
       else
          -- variable key
          local var_key_name = key_node.var and key_node.var.name or "[Non-atomic key]"
          maybe_warn_undefined_var_key(table_name, var_key_name, key_node)
-         current_tables[table_name].potentially_all_accessed = true
+         current_tables[table_name].potentially_all_accessed = key_node
       end
    end
 
@@ -456,7 +473,7 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
                   elseif node.tag == "Dots" or node.tag == "Call" then
                      -- Vararg can expand to arbitrary size;
                      -- Function calls can return multiple values
-                     current_tables[table_var.name].potentially_all_set = true
+                     current_tables[table_var.name].potentially_all_set = node
                   elseif node.tag ~= "Nil" then
                      -- Duck typing, meh
                      local key_node = {
@@ -482,8 +499,15 @@ end
 -- Warns about table fields that are never accessed
 -- VERY high false-negative rate, deliberately in order to minimize the false-positive rate
 function stage.run(chstate)
-   for _, line in ipairs(chstate.lines) do
-      detect_unused_table_fields(chstate, line)
+   for index, line in ipairs(chstate.lines) do
+      local external_references = {}
+      if line.node.tag == "Function" then
+         local args = line.node[1]
+         for _, parameter in ipairs(args) do
+            external_references[parameter.var.name] = true
+         end
+      end
+      detect_unused_table_fields(chstate, line, external_references)
    end
 end
 
