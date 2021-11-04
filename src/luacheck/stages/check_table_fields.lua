@@ -27,11 +27,9 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
    -- Can be from local x = {} OR "local x; x = {}"
    local function new_local_table(table_name)
       current_tables[table_name] = {
-         -- definitely_set_keys sets store a mapping from key => {table_name, node}; the node has the line/column info
-         definitely_set_keys = {},
-         -- A list of keys which are possibly set; since variables or function returns can be nil, we can't say for sure
-         -- maybe_set_keys and accessed keys are mappings from key => true|nil
-         maybe_set_keys = {},
+         -- set_keys sets store a mapping from key => {table_name, key_node, value_node}; the node has the line/column info
+         set_keys = {},
+         -- accessed keys is a mappings from key => true|nil
          accessed_keys = {},
          -- For a variable key, it's impossible to reliably get the value; any given key could be set or accessed
          potentially_all_set = false,
@@ -74,8 +72,8 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
    -- Called on accessing a table's field
    local function maybe_warn_undefined(table_name, key, range)
       -- Warn if the field is definitely not set
-      if not current_tables[table_name].definitely_set_keys[key]
-         and not current_tables[table_name].maybe_set_keys[key]
+      if (not current_tables[table_name].set_keys[key]
+            or current_tables[table_name].set_keys[key][3].tag == "Nil")
          and not current_tables[table_name].potentially_all_set
       then
          chstate:warn_range("325", range, {
@@ -88,8 +86,7 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
    -- Called on accessing a table's field with a variable
    -- Can only warn if the table is known to be empty
    local function maybe_warn_undefined_var_key(table_name, var_key_name, range)
-      if next(current_tables[table_name].definitely_set_keys) == nil
-         and next(current_tables[table_name].maybe_set_keys) == nil
+      if next(current_tables[table_name].set_keys) == nil
          and not current_tables[table_name].potentially_all_set
       then
          chstate:warn_range("325", range, {
@@ -109,21 +106,16 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
             key = tonumber(key)
          end
          -- Don't report duplicate keys in the init; other module handles that
-         if table_info.definitely_set_keys[key] and not in_init then
-            maybe_warn_unused(table_info, key, table_info.definitely_set_keys[key])
+         if table_info.set_keys[key] and not in_init then
+            maybe_warn_unused(table_info, key, table_info.set_keys[key])
          end
          table_info.accessed_keys[key] = nil
-         -- Variable set; variable could be nil
-         if assigned_val.tag == "Id" then
-            table_info.maybe_set_keys[key] = true
-            table_info.definitely_set_keys[key] = nil
-         elseif assigned_val.tag == "Nil" then
-            table_info.definitely_set_keys[key] = nil
-            table_info.maybe_set_keys[key] = nil
-         else
-            table_info.definitely_set_keys[key] = {table_name, key_node}
-            table_info.maybe_set_keys[key] = nil
-         end
+         -- Do note: just because a table's key has a value in set_keys doesn't
+         -- mean that it's not nil! variables, function returns, table indexes,
+         -- nil itself, and complex boolean conditions can return nil
+         -- set_keys tracks *specifically* the set itself, not whether the table's
+         -- field is non-nil
+         table_info.set_keys[key] = {table_name, key_node, assigned_val}
       else
          -- variable key
          table_info.potentially_all_set = true
@@ -154,7 +146,7 @@ local function detect_unused_table_fields(chstate, func_or_file_scope)
       table_info.aliases[table_name] = nil
 
       if next(table_info.aliases) == nil then
-         for key, value in pairs(table_info.definitely_set_keys) do
+         for key, value in pairs(table_info.set_keys) do
             maybe_warn_unused(table_info, key, value)
          end
       end

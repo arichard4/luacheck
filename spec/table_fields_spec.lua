@@ -279,12 +279,14 @@ x[2] = x[3]
    it("handles nil sets correctly", function()
       assert_warnings({
          {line = 2, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', },
-         {line = 4, column = 3, name = 'x', end_column = 3, field = 'z', code = '315', },
-         {line = 4, column = 9, name = 'x', end_column = 9, field = 'y', code = '325', },
-         {line = 5, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', },
+         {line = 3, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', },
+         {line = 5, column = 3, name = 'x', end_column = 3, field = 'z', code = '315', },
+         {line = 5, column = 9, name = 'x', end_column = 9, field = 'y', code = '325', },
+         {line = 6, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', },
       }, [[
 local x = {}
 x.y = 1
+x.y = nil
 x.y = nil
 x.z = x.y
 x.y = 1

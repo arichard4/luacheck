@@ -39,7 +39,7 @@ x.y = x[2]
       ]])
    end)
 
-   it("stops checking referenced upvalues if function call is known to not have table as an upvalue", function()
+   it("stops checking referenced upvalues even if function call is known to not have table as an upvalue", function()
       assert_warnings({}, [[
 local x = {}
 x[1] = 1
@@ -63,48 +63,6 @@ function func(x)
    x[1] = x.z
    x[1] = 1
 end
-      ]])
-   end)
-
-   it("can't identify complicated function calls", function()
-      assert_warnings({}, [[
-local x = {}
-x[1] = {}
-x[2] = 1
-x[1][1] = function() x[2] = 2 end
-x[1][2] = function() return 1 end
-x[1][2]()
-x[2] = 1 -- overwrite without access
-      ]])
-   end)
-
-   it("assumes that all non-atomic values can be nil", function()
-      assert_warnings({
-         {line = 3, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', }
-      }, [[
-local x = {}
-local var = 1
-x.y = 1
-x.y = var
-x.z = x.y
-x.y = var
-x.y = 1 -- Ideally, would be reported as an overwrite, as var is non-nil
-
-return x
-      ]])
-   end)
-
-   it("assumes that all non-atomic values in initializers can be arbitrary", function()
-      assert_warnings({
-         {line = 5, column = 3, name = 'x', end_column = 3, field = 1, code = '315', },
-         {line = 6, column = 3, name = 'x', end_column = 3, field = 1, code = '315', }
-      }, [[
-local var = 1
-local x = {[1+1] = 1, [var] = 1}
-print(x[2])
-print(x[1])
-x[1] = 1
-x[1] = 1
       ]])
    end)
 
