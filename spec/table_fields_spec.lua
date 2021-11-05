@@ -208,6 +208,17 @@ return x, t.y
       ]])
    end)
 
+   it("handles nested indexes correctly", function()
+      assert_warnings({
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'z'},
+      }, [[
+local x = {}
+x.y = {}
+x.z = {}
+return x.y.z
+      ]])
+   end)
+
    it("more complicated function calls", function()
       assert_warnings({}, [[
 local t = {}
@@ -316,7 +327,7 @@ return t.x, t.y, t.z
    it("handles multiple assignment of tables", function()
       assert_warnings({
          {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'a'},
-         {code = "325", line = 4, column = 10, end_column = 10, name = 'b', field = 'c'}
+         {code = "325", line = 4, column = 10, end_column = 10, name = 'b', field = 'c'},
       }, [[
 local x,y = {}, {}
 local a,b = {}, {}
