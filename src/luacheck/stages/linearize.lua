@@ -166,11 +166,11 @@ local function new_eval_item(node)
    }
 end
 
-local function new_noop_item(node, loop_end)
+local function new_noop_item(node, scope_end)
    return {
       tag = "Noop",
       node = node,
-      loop_end = loop_end
+      scope_end = scope_end,
    }
 end
 
@@ -330,8 +330,8 @@ function LinState:emit_cond_goto(name, cond_node)
    end
 end
 
-function LinState:emit_noop(node, loop_end)
-   self:emit(new_noop_item(node, loop_end))
+function LinState:emit_noop(node, scope_end)
+   self:emit(new_noop_item(node, scope_end))
 end
 
 function LinState:emit_stmt(stmt)
@@ -353,6 +353,7 @@ end
 function LinState:emit_stmt_Do(node)
    self:emit_noop(node)
    self:emit_block(node)
+   self:emit_noop(node, true)
 end
 
 function LinState:emit_stmt_While(node)
@@ -374,6 +375,7 @@ function LinState:emit_stmt_Repeat(node)
    self:register_label("do")
    self:enter_scope()
    self:emit_stmts(node[1])
+   self:emit_noop(node, true)
    self:emit_expr(node[2])
    self:leave_scope()
    self:emit_cond_goto("do", node[2])
@@ -430,6 +432,7 @@ function LinState:emit_stmt_If(node)
       self:emit_expr(node[i])
       self:emit_cond_goto("else", node[i])
       self:emit_block(node[i + 1])
+      self:emit_noop(node, true)
       self:emit_goto("end")
       self:register_label("else")
       self:leave_scope()
@@ -437,6 +440,7 @@ function LinState:emit_stmt_If(node)
 
    if #node % 2 == 1 then
       self:emit_block(node[#node])
+      self:emit_noop(node, true)
    end
 
    self:register_label("end")

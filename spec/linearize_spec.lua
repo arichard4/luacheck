@@ -107,10 +107,12 @@ describe("linearize", function()
 
       it("linearizes do-end blocks correctly", function()
          assert.equal([[
-1: Local ... (2..4)
+1: Local ... (2..6)
 2: Noop
 3: Noop
-4: Eval Call]], get_line_as_string([[
+4: Noop
+5: Eval Call
+6: Noop]], get_line_as_string([[
 do end
 do print(foo) end]]))
       end)
@@ -131,12 +133,13 @@ while cond do
 end]]))
 
          assert.equal([[
-1: Local ... (2..6)
+1: Local ... (2..7)
 2: Noop
-3: Local s (4..5)
+3: Local s (4..6)
 4: Eval Call
-5: Eval Id
-6: Cjump -> 3]], get_line_as_string([[
+5: Noop
+6: Eval Id
+7: Cjump -> 3]], get_line_as_string([[
 repeat
    local s = io.read()
    print(s)
@@ -195,20 +198,22 @@ while false do
 end]]))
 
          assert.equal([[
-1: Local ... (2..4)
+1: Local ... (2..5)
 2: Noop
 3: Eval Call
-4: Eval True]], get_line_as_string([[
+4: Noop
+5: Eval True]], get_line_as_string([[
 repeat
    foo()
 until true]]))
 
             assert.equal([[
-1: Local ... (2..5)
+1: Local ... (2..6)
 2: Noop
 3: Eval Call
-4: Eval Nil
-5: Jump -> 3]], get_line_as_string([[
+4: Noop
+5: Eval Nil
+6: Jump -> 3]], get_line_as_string([[
 repeat
    foo()
 until nil]]))
@@ -216,30 +221,32 @@ until nil]]))
 
       it("linearizes nested loops and breaks correctly", function()
          assert.equal([[
-1: Local ... (2..24)
+1: Local ... (2..26)
 2: Noop
 3: Eval Call
-4: Cjump -> 25
+4: Cjump -> 27
 5: Eval Call
 6: Noop
 7: Eval Call
-8: Cjump -> 18
+8: Cjump -> 19
 9: Eval Call
 10: Noop
 11: Eval Call
-12: Cjump -> 15
-13: Jump -> 18
-14: Jump -> 15
-15: Eval Call
-16: Noop
-17: Jump -> 7
-18: Noop
-19: Eval Call
-20: Cjump -> 23
-21: Jump -> 25
-22: Jump -> 23
+12: Cjump -> 16
+13: Jump -> 19
+14: Noop
+15: Jump -> 16
+16: Eval Call
+17: Noop
+18: Jump -> 7
+19: Noop
+20: Eval Call
+21: Cjump -> 25
+22: Jump -> 27
 23: Noop
-24: Jump -> 3]], get_line_as_string([[
+24: Jump -> 25
+25: Noop
+26: Jump -> 3]], get_line_as_string([[
 while cond() do
    stmts()
 
@@ -261,21 +268,25 @@ end]]))
 
       it("linearizes if correctly", function()
          assert.equal([[
-1: Local ... (2..15)
+1: Local ... (2..19)
 2: Noop
 3: Eval Call
-4: Cjump -> 16
+4: Cjump -> 20
 5: Noop
 6: Eval Call
-7: Cjump -> 10
+7: Cjump -> 11
 8: Eval Call
-9: Jump -> 15
-10: Eval Call
-11: Cjump -> 14
-12: Eval Call
-13: Jump -> 15
-14: Eval Call
-15: Jump -> 16]], get_line_as_string([[
+9: Noop
+10: Jump -> 18
+11: Eval Call
+12: Cjump -> 16
+13: Eval Call
+14: Noop
+15: Jump -> 18
+16: Eval Call
+17: Noop
+18: Noop
+19: Jump -> 20]], get_line_as_string([[
 if cond() then
    if cond() then
       stmts()
@@ -289,20 +300,24 @@ end]]))
 
       it("linearizes if with literal condition correctly", function()
          assert.equal([[
-1: Local ... (2..14)
+1: Local ... (2..18)
 2: Noop
 3: Eval True
 4: Noop
 5: Eval Call
-6: Cjump -> 9
+6: Cjump -> 10
 7: Eval Call
-8: Jump -> 14
-9: Eval False
-10: Jump -> 13
-11: Eval Call
-12: Jump -> 14
-13: Eval Call
-14: Jump -> 15]], get_line_as_string([[
+8: Noop
+9: Jump -> 17
+10: Eval False
+11: Jump -> 15
+12: Eval Call
+13: Noop
+14: Jump -> 17
+15: Eval Call
+16: Noop
+17: Noop
+18: Jump -> 19]], get_line_as_string([[
 if true then
    if cond() then
       stmts()
@@ -316,7 +331,7 @@ end]]))
 
       it("linearizes gotos correctly", function()
          assert.equal([[
-1: Local ... (2..13)
+1: Local ... (2..14)
 2: Eval Call
 3: Noop
 4: Jump -> 2
@@ -328,7 +343,8 @@ end]]))
 10: Noop
 11: Noop
 12: Jump -> 14
-13: Eval Call]], get_line_as_string([[
+13: Eval Call
+14: Noop]], get_line_as_string([[
 ::label1::
 stmts()
 goto label1
