@@ -21,7 +21,9 @@ local current_tables
 
 -- A list of all local variables that are (1) upvalues from created functions,
 -- or (2) upvalues from outside the current scope, or (3) parameters passed in
-local external_references
+local external_references_set -- variable value is potentially overwritten externally
+local external_references_accessed -- variable fields are potentially all accessed externally
+local external_references_mutated -- variable fields are potentially all mutated externally
 
 -- Start keeping track of a local table
 -- Can be from local x = {} OR "local x; x = {}"
@@ -183,7 +185,7 @@ local function on_scope_end()
    for table_name, table_info in pairs(current_tables) do
       local has_external_references = false
       for alias in pairs(table_info.aliases) do
-         if external_references[alias] then
+         if external_references_accessed[alias] then
             has_external_references = true
          end
       end
@@ -200,10 +202,17 @@ end
 -- Two cases for external access:
 -- * Upvalue from outside the current scope
 -- * Upvalue to a function created in the current scope
-local function stop_tracking_externally_referenced_tables()
+local function enter_unknown_scope(node)
    for table_name in pairs(current_tables) do
-      if external_references[table_name] then
+      if external_references_set[table_name] then
          wipe_table_data(table_name)
+      else
+         if external_references_accessed[table_name] then
+            current_tables[table_name].potentially_all_accessed = node
+         end
+         if external_references_mutated[table_name] then
+            current_tables[table_name].potentially_all_set = node
+         end
       end
    end
 end
@@ -231,7 +240,7 @@ end
 local function check_for_function_calls(node)
    if function_call_tags[node.tag] then
       if not is_builtin_function(node) then
-         stop_tracking_externally_referenced_tables()
+         enter_unknown_scope(node)
       end
    end
 
@@ -468,37 +477,35 @@ local item_callbacks = {
 local function detect_unused_table_fields(func_or_file_scope)
    current_tables = {}
 
-   external_references = {}
+   external_references_set, external_references_accessed, external_references_mutated = {}, {}, {}
    local args = func_or_file_scope.node[1]
    for _, parameter in ipairs(args) do
-      external_references[parameter.var.name] = true
+      external_references_accessed[parameter.var.name] = true
+      external_references_mutated[parameter.var.name] = true
    end
 
    -- Upvalues from outside current scope
    -- Only need to check set_upvalues because we only track newly set tables
    -- Inside the current scope
    for var in pairs(func_or_file_scope.set_upvalues) do
-      external_references[var.name] = true
+      external_references_set[var.name] = true
+      external_references_accessed[var.name] = true
+      external_references_mutated[var.name] = true
    end
 
    for item_index, item in ipairs(func_or_file_scope.items) do
       -- Add that this item potentially adds upvalue references to local variables
       -- If it contains a new function declaration
-      -- TODO: ideally track these separately; "set_upvalues" should wipe everything,
-      -- but "accessed_upvalues" should set potentially_all_accessed to be true,
-      -- and "mutated_upvalues" should set potentially_all_set to be true
-      -- And at scope end, mutated_upvalues and set_upvalues shouldn't keep a 
-      -- reference alive
       if item.lines then
          for _,func_scope in ipairs(item.lines) do
             for var in pairs(func_scope.accessed_upvalues) do
-               external_references[var.name] = true
+               external_references_accessed[var.name] = true
             end
             for var in pairs(func_scope.set_upvalues) do
-               external_references[var.name] = true
+               external_references_set[var.name] = true
             end
             for var in pairs(func_scope.mutated_upvalues) do
-               external_references[var.name] = true
+               external_references_mutated[var.name] = true
             end
          end
       end

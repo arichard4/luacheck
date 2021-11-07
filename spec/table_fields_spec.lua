@@ -71,7 +71,10 @@ end
    end)
 
    it("handles upvalue mutations", function()
-      assert_warnings({}, [[
+      assert_warnings({
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
+         {code = "315", line = 3, column = 12, end_column = 15, name = 'x', field = 'func'},
+      }, [[
 local x = {}
 x.y = 1
 function x.func() x.z = 1 end
@@ -79,7 +82,10 @@ function x.func() x.z = 1 end
    end)
 
    it("handles upvalue sets", function()
-      assert_warnings({}, [[
+      assert_warnings({
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
+         {code = "315", line = 3, column = 12, end_column = 15, name = 'x', field = 'func'},
+      }, [[
 local x = {}
 x.y = 1
 function x.func() x = 1 end

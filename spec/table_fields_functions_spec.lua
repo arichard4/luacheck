@@ -98,8 +98,11 @@ return x, y
       ]])
    end)
 
-   it("functions calls stop checking for tables referenced as upvalues", function()
+   it("functions calls stop checking for tables accessed as upvalues", function()
       assert_warnings({
+         {code = "325", line = 7, column = 9, end_column = 9, name = 'x', field = 'z'},
+         {code = "325", line = 19, column = 9, end_column = 9, name = 'b', field = 'z'},
+         {code = "325", line = 25, column = 9, end_column = 9, name = 'c', field = 'z'},
          {code = "315", line = 27, column = 3, end_column = 3, name = 'y', field = 'y'},
       }, [[
 local y = {}
@@ -129,6 +132,8 @@ func()
 c.y = c.z
 
 y.y = 1
+
+return x, a, b, c
       ]])
    end)
 
