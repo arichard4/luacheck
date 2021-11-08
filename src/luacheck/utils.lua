@@ -374,4 +374,30 @@ function utils.array_of(type_)
    end
 end
 
+local function deep_copy_set(new_table, old_table, tracking_refs)
+   for k,v in pairs(old_table) do
+      if type(v) == 'table' then
+         if tracking_refs[v] then
+            new_table[k] = tracking_refs[v]
+         else
+            local new_v = {}
+            tracking_refs[v] = new_v
+            new_table[k] = new_v
+            deep_copy_set(new_v, v, tracking_refs)
+         end
+      else
+         new_table[k] = v
+      end
+   end
+end
+
+-- Returns a deep copy of table, with the same table relationships/aliases
+function utils.deepcopy(old_table)
+   local new_table = {}
+   local tracking_refs = {}
+   deep_copy_set(new_table, old_table, tracking_refs)
+   return new_table
+end
+
+
 return utils

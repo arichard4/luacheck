@@ -19,6 +19,12 @@ local chstate
 -- A list of all local variables that are assigned tables
 local current_tables
 
+-- When entering a new control flow block, we save the previous state of current_tables
+local current_tables_from_outer_scopes = {}
+
+-- An array of {local_name => true}; each new scope *doesn't* inherit the previous scopes' locals here
+local local_variables_per_scope = {}
+
 -- A list of all local variables that are (1) upvalues from created functions,
 -- or (2) upvalues from outside the current scope, or (3) parameters passed in
 local external_references_set -- variable value is potentially overwritten externally
@@ -181,19 +187,23 @@ local function stop_tracking_tables()
    end
 end
 
+local function on_scope_end_for_var(table_name, table_info)
+   local has_external_references = false
+   for alias in pairs(table_info.aliases) do
+      if external_references_accessed[alias] then
+         has_external_references = true
+      end
+   end
+   if has_external_references then
+      wipe_table_data(table_name)
+   else
+      end_table_variable(table_name)
+   end
+end
+
 local function on_scope_end()
    for table_name, table_info in pairs(current_tables) do
-      local has_external_references = false
-      for alias in pairs(table_info.aliases) do
-         if external_references_accessed[alias] then
-            has_external_references = true
-         end
-      end
-      if has_external_references then
-         wipe_table_data(table_name)
-      else
-         end_table_variable(table_name)
-      end
+      on_scope_end_for_var(table_name, table_info)
    end
 end
 
@@ -366,7 +376,27 @@ local function handle_control_flow_item(item, item_index, func_or_file_scope)
       -- we wipe the scope both times, because if a local declared outside the if scope got assigned
       -- a table inside the if scope, we want to check the consequences of that assignment
       -- inside, but not assume outside the if that the table has the keys from inside
-      stop_tracking_tables()
+      if item.node and item.node.tag == "Do" then
+         -- Simplest case: do doesn't lead to branching scope
+         if item.scope_end then
+            outer_scope_current_tables = table.remove(current_tables_from_outer_scopes, #current_tables_from_outer_scopes)
+            local ended_scope_new_locals = table.remove(local_variables_per_scope, #local_variables_per_scope)
+            for table_name, table_info in pairs(current_tables) do
+               if ended_scope_new_locals[table_name] then
+                  on_scope_end_for_var(table_name, table_info)
+               else
+                  outer_scope_current_tables[table_name] = table_info
+               end
+            end
+            current_tables = outer_scope_current_tables
+         else
+            table.insert(local_variables_per_scope, {})
+            table.insert(current_tables_from_outer_scopes, current_tables)
+            current_tables = utils.deepcopy(current_tables)
+         end
+      else
+         stop_tracking_tables()
+      end
    end
 end
 
@@ -428,6 +458,12 @@ local function handle_local_or_set_item(item, item_index)
          current_tables[new_var_name].aliases[new_var_name] = true
       end
 
+      if item.tag == "Local" then
+         if lhs_node.tag == "Id" then
+            local_variables_per_scope[#local_variables_per_scope][lhs_node.var.name] = true
+         end
+      end
+
       -- Case: local $table = {} or local $table; $table = {}
       -- New table assignment
       if lhs_node.var and rhs_node.tag == "Table" then
@@ -474,12 +510,17 @@ local item_callbacks = {
 
 -- Steps through the function or file scope one item at a time
 -- At each point, tracking for each local table which fields have been set
-local function detect_unused_table_fields(func_or_file_scope)
+local function detect_unused_table_fields(func_or_file_scope, start_index, inside_control_scope)
+   start_index = start_index or 1
+   inside_control_scope = inside_control_scope or false
+
    current_tables = {}
+   table.insert(local_variables_per_scope, {})
 
    external_references_set, external_references_accessed, external_references_mutated = {}, {}, {}
    local args = func_or_file_scope.node[1]
    for _, parameter in ipairs(args) do
+      local_variables_per_scope[#local_variables_per_scope][parameter.var.name] = true
       external_references_accessed[parameter.var.name] = true
       external_references_mutated[parameter.var.name] = true
    end
@@ -493,7 +534,8 @@ local function detect_unused_table_fields(func_or_file_scope)
       external_references_mutated[var.name] = true
    end
 
-   for item_index, item in ipairs(func_or_file_scope.items) do
+   for item_index = start_index, #func_or_file_scope.items do
+      local item = func_or_file_scope.items[item_index]
       -- Add that this item potentially adds upvalue references to local variables
       -- If it contains a new function declaration
       if item.lines then
@@ -510,7 +552,7 @@ local function detect_unused_table_fields(func_or_file_scope)
          end
       end
 
-      if item.node then
+      if item.tag ~= "Noop" and item.node then
          check_for_function_calls(item.node)
       end
 

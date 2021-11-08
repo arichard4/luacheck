@@ -153,53 +153,6 @@ return {d} or {d}
       ]])
    end)
 
-   it("detects unused and undefined table fields inside control blocks", function()
-      assert_warnings({
-         {line = 4, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
-         {line = 10, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
-         {line = 16, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
-         {line = 22, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
-         {line = 28, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
-         {line = 34, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
-      }, [[
-do
-   local x = {}
-   x.y = 1
-   x[1] = x.z
-end
-
-if true then
-   local x = {}
-   x.y = 1
-   x[1] = x.z
-end
-
-while true do
-   local x = {}
-   x.y = 1
-   x[1] = x.z
-end
-
-repeat
-   local x = {}
-   x.y = 1
-   x[1] = x.z
-until false
-
-for i=1,2 do
-   local x = {}
-   x.y = 1
-   x[1] = x.z
-end
-
-for _,_ in pairs({}) do
-   local x = {}
-   x.y = 1
-   x[1] = x.z
-end
-      ]])
-   end)
-
    it("accounts for returned tables", function()
       assert_warnings({
          {code = "315", line = 6, column = 3, end_column = 3, name = 't', field = 'x'},
