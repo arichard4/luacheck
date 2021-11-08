@@ -4,10 +4,10 @@ local function assert_warnings(warnings, src)
    assert.same(warnings, helper.get_stage_warnings("check_table_fields", src))
 end
 
-describe("table field todo tests", function()
+describe("table field control flow", function()
    it("detects unused and undefined table fields inside control blocks", function()
       assert_warnings({
-         {line = 3, column = 6, name = 'x', end_column = 6, field = 1, code = '315', },
+         {line = 3, column = 6, name = 'x', end_column = 6, field = 1, code = '315', set_is_nil = ''},
          {line = 3, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
          {line = 8, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
          {line = 13, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
@@ -49,8 +49,8 @@ end
 
    it("handles inheriting outer scope definitions", function()
       assert_warnings({
-         {line = 2, column = 3, name = 'x', end_column = 3, field = 1, code = '315', },
-         {line = 6, column = 6, name = 'x', end_column = 6, field = 2, code = '315', },
+         {line = 2, column = 3, name = 'x', end_column = 3, field = 1, code = '315', set_is_nil = ''},
+         {line = 6, column = 6, name = 'x', end_column = 6, field = 2, code = '315', set_is_nil = ''},
       }, [[
 local x = {}
 x[1] = 1
@@ -67,7 +67,7 @@ print(x[1], x[3])
 
    it("handles overwriting outer scope definitions", function()
       assert_warnings({
-         {line = 2, column = 3, name = 'x', end_column = 3, field = 1, code = '315', },
+         {line = 2, column = 3, name = 'x', end_column = 3, field = 1, code = '315', set_is_nil = ''},
       }, [[
 local x = {}
 x[1] = 1
@@ -84,8 +84,8 @@ print(x[1], x[2])
 
    it("handles shadowing outer scope definitions", function()
       assert_warnings({
-         {line = 6, column = 6, name = 'x', end_column = 6, field = 1, code = '315', },
-         {line = 7, column = 6, name = 'x', end_column = 6, field = 2, code = '315', },
+         {line = 6, column = 6, name = 'x', end_column = 6, field = 1, code = '315', set_is_nil = ''},
+         {line = 7, column = 6, name = 'x', end_column = 6, field = 2, code = '315', set_is_nil = ''},
          {line = 10, column = 15, name = 'x', end_column = 15, field = 2, code = '325', },
       }, [[
 local x = {}

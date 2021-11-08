@@ -18,6 +18,15 @@ y[1] = 1
       ]])
    end)
 
+   it("can't parse complicated values out", function()
+      assert_warnings({}, [[
+local val = nil
+local t = {}
+t[1] = val
+print(t[1])
+      ]])
+   end)
+
    it("does nothing for nested tables", function()
       assert_warnings({}, [[
 local x = {}
@@ -31,7 +40,7 @@ return x
    -- Because of possible multiple return (TODO is to try to examine the function for multiple return)
    it("assumes tables initialized from function can have arbitrary keys set", function()
       assert_warnings({
-         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y'},
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
       }, [[
 local function func() return 1 end
 local x = {func()}
@@ -70,7 +79,7 @@ end
    it("stops checking a table definition if we change scopes", function()
       assert_warnings({
          {code = "325", line = 3, column = 10, end_column = 10, name = 'x', field = 'z'},
-         {code = "315", line = 11, column = 6, end_column = 6, name = 'x', field = 1},
+         {code = "315", line = 11, column = 6, end_column = 6, name = 'x', field = 1, set_is_nil = ''},
          {code = "325", line = 13, column = 13, end_column = 13, name = 'x', field = 'z'},
       }, [[
 local x = {}

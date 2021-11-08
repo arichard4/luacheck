@@ -7,13 +7,13 @@ end
 describe("table field checks", function()
    it("detects unused and undefined table fields", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
-         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y'},
-         {code = "315", line = 4, column = 3, end_column = 3, name = 'x', field = 1},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
+         {code = "315", line = 4, column = 3, end_column = 3, name = 'x', field = 1, set_is_nil = ''},
          {code = "325", line = 4, column = 10, end_column = 10, name = 'x', field = 'z'},
-         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 'a'},
+         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 'a', set_is_nil = ''},
          {code = "325", line = 5, column = 9, end_column = 9, name = 'x', field = 'a'},
-         {code = "315", line = 6, column = 12, end_column = 15, name = 'x', field = 'func'},
+         {code = "315", line = 6, column = 12, end_column = 15, name = 'x', field = 'func', set_is_nil = ''},
       }, [[
 local x = {}
 x.y = 1
@@ -27,7 +27,7 @@ function x.func() end
    it("detects complicated unused and undefined table fields", function()
       assert_warnings({
          {line = 4, column = 11, name = 't', end_column = 11, field = 'b', code = '325', },
-         {line = 10, column = 3, name = 'a', end_column = 3, field = 1, code = '315', },
+         {line = 10, column = 3, name = 'a', end_column = 3, field = 1, code = '315', set_is_nil = '' },
       }, [[
 local x = {1}
 local t = {}
@@ -72,8 +72,8 @@ end
 
    it("handles upvalue mutations", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
-         {code = "315", line = 3, column = 12, end_column = 15, name = 'x', field = 'func'},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
+         {code = "315", line = 3, column = 12, end_column = 15, name = 'x', field = 'func', set_is_nil = ''},
       }, [[
 local x = {}
 x.y = 1
@@ -83,8 +83,8 @@ function x.func() x.z = 1 end
 
    it("handles upvalue sets", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
-         {code = "315", line = 3, column = 12, end_column = 15, name = 'x', field = 'func'},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
+         {code = "315", line = 3, column = 12, end_column = 15, name = 'x', field = 'func', set_is_nil = ''},
       }, [[
 local x = {}
 x.y = 1
@@ -155,7 +155,7 @@ return {d} or {d}
 
    it("accounts for returned tables", function()
       assert_warnings({
-         {code = "315", line = 6, column = 3, end_column = 3, name = 't', field = 'x'},
+         {code = "315", line = 6, column = 3, end_column = 3, name = 't', field = 'x', set_is_nil = ''},
       }, [[
 local x = {}
 x[1] = 1
@@ -169,7 +169,7 @@ return x, t.y
 
    it("handles nested indexes correctly", function()
       assert_warnings({
-         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'z'},
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'z', set_is_nil = ''},
       }, [[
 local x = {}
 x.y = {}
@@ -191,12 +191,12 @@ t.func(x)
 
    it("handles initialized tables", function()
       assert_warnings({
-         {code = "315", line = 1, column = 12, end_column = 12, name = 'x', field = 1},
-         {code = "315", line = 1, column = 15, end_column = 15, name = 'x', field = 2},
-         {code = "315", line = 1, column = 18, end_column = 18, name = 'x', field = 'a'},
-         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 1},
+         {code = "315", line = 1, column = 12, end_column = 12, name = 'x', field = 1, set_is_nil = ''},
+         {code = "315", line = 1, column = 15, end_column = 15, name = 'x', field = 2, set_is_nil = ''},
+         {code = "315", line = 1, column = 18, end_column = 18, name = 'x', field = 'a', set_is_nil = ''},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 1, set_is_nil = ''},
          {code = "325", line = 2, column = 10, end_column = 10, name = 'x', field = 'z'},
-         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y'}
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''}
       }, [[
 local x = {1, 2, a = 3}
 x[1] = x.z
@@ -225,9 +225,9 @@ end)
 
    it("handles table assignments to existing local variables", function()
       assert_warnings({
-         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y'},
-         {code = "315", line = 6, column = 3, end_column = 3, name = 'y', field = 'y'},
-         {code = "315", line = 8, column = 3, end_column = 3, name = 'y', field = 'y'},
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
+         {code = "315", line = 6, column = 3, end_column = 3, name = 'y', field = 'y', set_is_nil = ''},
+         {code = "315", line = 8, column = 3, end_column = 3, name = 'y', field = 'y', set_is_nil = ''},
       }, [[
 local x
 x = {}
@@ -257,11 +257,11 @@ x[2] = x[3]
 
    it("handles nil sets correctly", function()
       assert_warnings({
-         {line = 2, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', },
-         {line = 3, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', },
-         {line = 5, column = 3, name = 'x', end_column = 3, field = 'z', code = '315', },
+         {line = 2, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', set_is_nil = ''},
+         {line = 3, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', set_is_nil = 'nil '},
+         {line = 5, column = 3, name = 'x', end_column = 3, field = 'z', code = '315', set_is_nil = ''},
          {line = 5, column = 9, name = 'x', end_column = 9, field = 'y', code = '325', },
-         {line = 6, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', },
+         {line = 6, column = 3, name = 'x', end_column = 3, field = 'y', code = '315', set_is_nil = ''},
       }, [[
 local x = {}
 x.y = 1
@@ -285,7 +285,7 @@ return t.x, t.y, t.z
 
    it("handles multiple assignment of tables", function()
       assert_warnings({
-         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'a'},
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'a', set_is_nil = ''},
          {code = "325", line = 4, column = 10, end_column = 10, name = 'b', field = 'c'},
       }, [[
 local x,y = {}, {}
@@ -297,7 +297,7 @@ return b.c
 
    it("handles imbalanced multiple assignment correctly", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 't', field = 'x'},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 't', field = 'x', set_is_nil = ''},
          {code = "325", line = 3, column = 10, end_column = 10, name = 't', field = 'y'},
       }, [[
 local t = {}
@@ -317,8 +317,8 @@ return t
 
    it("understands the difference between string and number keys", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 't', field = 1},
-         {code = "315", line = 3, column = 3, end_column = 5, name = 't', field = '2'},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 't', field = 1, set_is_nil = ''},
+         {code = "315", line = 3, column = 3, end_column = 5, name = 't', field = '2', set_is_nil = ''},
          {code = "325", line = 3, column = 12, end_column = 14, name = 't', field = '1'},
       }, [[
 local t = {}
@@ -329,8 +329,8 @@ t["2"] = t["1"]
 
    it("continues checking if the table variable itself is accessed without creating a reference", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
-         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 'y'}
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
+         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''}
       }, [[
 local x = {}
 x.y = 1
@@ -355,11 +355,11 @@ return t
 
    it("handles aliases correctly", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 1},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 1, set_is_nil = ''},
          {code = "325", line = 2, column = 10, end_column = 10, name = 'x', field = 'z'},
-         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y'},
-         {code = "315", line = 6, column = 3, end_column = 3, name = 't', field = 'y'},
-         {code = "315", line = 7, column = 3, end_column = 3, name = 't', field = 1},
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
+         {code = "315", line = 6, column = 3, end_column = 3, name = 't', field = 'y', set_is_nil = ''},
+         {code = "315", line = 7, column = 3, end_column = 3, name = 't', field = 1, set_is_nil = ''},
          {code = "325", line = 7, column = 10, end_column = 10, name = 't', field = 'z'},
       }, [[
 local x = {}
@@ -375,7 +375,7 @@ return t.x
 
    it("an alias being overwritten doesn't end processing for the other aliases", function()
       assert_warnings({
-         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 1},
+         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 1, set_is_nil = ''},
       }, [[
 local x = {}
 local t = x
@@ -416,7 +416,7 @@ return x, t
 
    it("assumes that tables initialized from varargs can have arbitary keys set", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
       }, [[
 local x = {...}
 x.y = x[2]
@@ -425,8 +425,8 @@ x.y = x[2]
 
    it("catches unused writes after a non-atomic access", function()
       assert_warnings({
-         {code = "315", line = 6, column = 3, end_column = 3, name = 'x', field = 'y'},
-         {code = "315", line = 10, column = 3, end_column = 3, name = 'a', field = 'y'},
+         {code = "315", line = 6, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
+         {code = "315", line = 10, column = 3, end_column = 3, name = 'a', field = 'y', set_is_nil = ''},
       }, [[
 local var = 1
 
@@ -444,8 +444,8 @@ return t
 
    it("accesses are not forever", function()
       assert_warnings({
-         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 2},
-         {code = "315", line = 4, column = 3, end_column = 3, name = 'x', field = 1},
+         {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 2, set_is_nil = ''},
+         {code = "315", line = 4, column = 3, end_column = 3, name = 'x', field = 1, set_is_nil = ''},
       }, [[
 local x = {}
 x[1] = 1

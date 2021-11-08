@@ -7,7 +7,7 @@ end
 describe("table field function checks", function()
    it("method invocation ends checking for the base table", function()
       assert_warnings({
-         {code = "315", line = 27, column = 3, end_column = 3, name = 'y', field = 'y'},
+         {code = "315", line = 27, column = 3, end_column = 3, name = 'y', field = 'y', set_is_nil = ''},
          {code = "325", line = 27, column = 9, end_column = 9, name = 'y', field = 'x'},
       }, [[
 local y = {}
@@ -42,7 +42,7 @@ y.y = y.x
 
    it("functions calls using a table as a whole ends checking for that table", function()
       assert_warnings({
-         {code = "315", line = 31, column = 3, end_column = 3, name = 'y', field = 'y'},
+         {code = "315", line = 31, column = 3, end_column = 3, name = 'y', field = 'y', set_is_nil = ''},
          {code = "325", line = 31, column = 9, end_column = 9, name = 'y', field = 'x'},
       }, [[
 local y = {}
@@ -81,7 +81,7 @@ y.y = y.x
 
    it("functions calls using a table field access only that field", function()
       assert_warnings({
-         {code = "315", line = 1, column = 14, end_column = 14, name = 'x', field = 2},
+         {code = "315", line = 1, column = 14, end_column = 14, name = 'x', field = 2, set_is_nil = ''},
       }, [[
 local x = {1,1}
 print(x[1])
@@ -100,10 +100,7 @@ return x, y
 
    it("functions calls stop checking for tables accessed as upvalues", function()
       assert_warnings({
-         {code = "325", line = 7, column = 9, end_column = 9, name = 'x', field = 'z'},
-         {code = "325", line = 19, column = 9, end_column = 9, name = 'b', field = 'z'},
-         {code = "325", line = 25, column = 9, end_column = 9, name = 'c', field = 'z'},
-         {code = "315", line = 27, column = 3, end_column = 3, name = 'y', field = 'y'},
+         {code = "315", line = 27, column = 3, end_column = 3, name = 'y', field = 'y', set_is_nil = ''},
       }, [[
 local y = {}
 
@@ -139,28 +136,10 @@ return x, a, b, c
 
    it("handles multiple layers of nested function calls correctly", function()
       assert_warnings({
-         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y'},
+         {code = "315", line = 2, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
       }, [[
 local x = {...}
 x.y = x[2]
-      ]])
-   end)
-
-   it("understands that builtins never have local tables as an upvalue", function()
-      assert_warnings({
-         {code = "315", line = 1, column = 12, end_column = 12, name = 'x', field = 1},
-         {code = "325", line = 3, column = 10, end_column = 10, name = 'x', field = 'z'},
-         {code = "315", line = 5, column = 12, end_column = 12, name = 'y', field = 1},
-         {code = "325", line = 7, column = 10, end_column = 10, name = 'y', field = 'z'},
-      }, [[
-local x = {1}
-print("Eh")
-x[1] = x.z
-
-local y = {1}
-string.lower("AAAA")
-y[1] = y.z
-return x, y
       ]])
    end)
 end)

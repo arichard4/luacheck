@@ -4,15 +4,16 @@ local builtin_standards = require 'luacheck.builtin_standards'
 local stage = {}
 
 stage.warnings = {
-   ["315"] = {message_format = "value assigned to table field {name!}.{field!} is unused", fields = {"name", "field"}},
+   ["315"] = {
+      message_format = "{set_is_nil}value assigned to table field {name!}.{field!} is unused",
+      fields = {"set_is_nil", "name", "field"}
+   },
    ["325"] = {message_format = "table field {name!}.{field!} is not defined", fields = {"name", "field"}},
 }
 
 local function_call_tags = utils.array_to_set({"Call", "Invoke"})
--- Tags that delimit a control flow block; note that "Return" isn't on this list
-local control_flow_tags = utils.array_to_set(
-   {"Do", "While", "Repeat", "Fornum", "Forin", "If", "Label", "Goto", "Jump", "Cjump"}
-)
+
+local function noop() end
 
 local chstate
 
@@ -66,17 +67,21 @@ end
 -- Either the table is gone, or the field has been overwritten
 -- Table info can be different from the value of current_tables[table_name]
 -- In the case that the original table was removed but an alias is still relevant
-local function maybe_warn_unused(table_info, key, set_data)
-   local set_table_name, set_node = set_data[1], set_data[2]
+local function maybe_warn_unused(table_info, key)
+   local set_data = table_info.set_keys[key]
+   local set_table_name, set_node, assigned_val = set_data.table_name, set_data.key_node, set_data.assigned_node
    local access_node = table_info.accessed_keys[key]
    local all_access_node = table_info.potentially_all_accessed
    -- Warn if there were definitely no accesses for this value
    if (not access_node or access_node.line < set_node.line)
       and (not all_access_node or all_access_node.line < set_node.line)
    then
+      -- table.insert/table.remove can push around keys internally, so use the set_node's key
+      local original_key = set_node.tag == "Number" and tonumber(set_node[1]) or set_node[1]
       chstate:warn_range("315", set_node, {
-         field = key,
-         name = set_table_name
+         name = set_table_name,
+         field = original_key,
+         set_is_nil = assigned_val.tag == "Nil" and "nil " or ""
       })
    end
 end
@@ -87,33 +92,33 @@ local function maybe_warn_undefined(table_name, key, range)
    local set_data = current_tables[table_name].set_keys[key]
    local set_node, set_val
    if set_data then
-      set_node, set_val = set_data[2], set_data[3]
+      set_node, set_val = set_data.key_node, set_data.assigned_node
    end
    local all_set = current_tables[table_name].potentially_all_set
    if (not set_data and not all_set)
       or (set_data and set_val.tag == "Nil" and (not all_set or set_node.line > all_set.line))
    then
       chstate:warn_range("325", range, {
-         field = key,
-         name = table_name
+         name = table_name,
+         field = key
       })
    end
 end
 
--- Called on accessing a table's field with a variable
+-- Called on accessing a table's field with an unknown key
 -- Can only warn if the table is known to be empty
 local function maybe_warn_undefined_var_key(table_name, var_key_name, range)
    -- Are there any non-nil keys at all?
    local potentially_set = not not current_tables[table_name].potentially_all_set
    for _, set_data in pairs(current_tables[table_name].set_keys) do
-      if set_data.tag ~= "Nil" then
+      if set_data.assigned_node.tag ~= "Nil" then
          potentially_set = true
       end
    end
    if not potentially_set then
       chstate:warn_range("325", range, {
-         field = var_key_name,
-         name = table_name
+         name = table_name,
+         field = var_key_name
       })
    end
 end
@@ -129,7 +134,7 @@ local function set_key(table_name, key_node, assigned_val, in_init)
       end
       -- Don't report duplicate keys in the init; other module handles that
       if table_info.set_keys[key] and not in_init then
-         maybe_warn_unused(table_info, key, table_info.set_keys[key])
+         maybe_warn_unused(table_info, key)
       end
       table_info.accessed_keys[key] = nil
       -- Do note: just because a table's key has a value in set_keys doesn't
@@ -137,7 +142,11 @@ local function set_key(table_name, key_node, assigned_val, in_init)
       -- nil itself, and complex boolean conditions can return nil
       -- set_keys tracks *specifically* the set itself, not whether the table's
       -- field is non-nil
-      table_info.set_keys[key] = {table_name, key_node, assigned_val}
+      table_info.set_keys[key] = {
+         table_name = table_name,
+         key_node = key_node,
+         assigned_node = assigned_val
+      }
    else
       -- variable key
       if assigned_val.tag ~= "Nil" then
@@ -170,8 +179,8 @@ local function end_table_variable(table_name)
    table_info.aliases[table_name] = nil
 
    if next(table_info.aliases) == nil then
-      for key, value in pairs(table_info.set_keys) do
-         maybe_warn_unused(table_info, key, value)
+      for key in pairs(table_info.set_keys) do
+         maybe_warn_unused(table_info, key)
       end
    end
 
@@ -219,6 +228,11 @@ local function enter_unknown_scope(node)
       else
          if external_references_accessed[table_name] then
             current_tables[table_name].potentially_all_accessed = node
+            -- Unfortunately mutate vs. access only checks in-line
+            -- So an access can pass the table elsewhere that then mutates
+            -- e.g. function() table.insert(t, 1) end is an access that
+            -- causes a mutation
+            current_tables[table_name].potentially_all_set = node
          end
          if external_references_mutated[table_name] then
             current_tables[table_name].potentially_all_set = node
@@ -281,6 +295,210 @@ end
 
 local record_table_accesses
 
+-- Like #, but excludes known nil values
+local function get_table_length(set_keys)
+   local temp_table = {}
+   for key, set_info in pairs(set_keys) do
+      if set_info.assigned_node.tag ~= "Nil" then
+         temp_table[key] = true
+      end
+   end
+   return #temp_table
+end
+
+local function process_table_insert(node)
+   local table_param = node[2]
+   if table_param
+      and table_param.var
+      and current_tables[table_param.var.name]
+   then
+      local insert_key, inserted_val
+      if node[4] then
+         insert_key = node[3]
+         if insert_key.tag == "String" and tonumber(insert_key[1]) then
+            insert_key = utils.deepcopy(insert_key)
+            insert_key.tag = "Number"
+            insert_key[1] = tonumber(insert_key[1])
+         end
+         inserted_val = node[4]
+      else
+         inserted_val = node[3]
+      end
+      if not insert_key then
+         local table_info = current_tables[table_param.var.name]
+         if table_info.potentially_all_set then
+            table_info.potentially_all_set = node
+            return
+         else
+            -- table.insert skips over gaps in the array part
+            local max_int_key = get_table_length(table_info.set_keys)
+            insert_key = {
+               [1] = max_int_key + 1,
+               tag = "Number",
+               line = node.line,
+               offset = node.offset,
+               end_offset = node.end_offset
+            }
+
+         end
+      end
+      set_key(table_param.var.name, insert_key, inserted_val, false)
+   end
+
+   -- t[$existing_table] = val
+   if node[3] then
+      record_table_accesses(node[3])
+   end
+   -- t[key] = $existing_table
+   if node[4] then
+      record_table_accesses(node[4])
+   end
+end
+
+local function process_table_remove(node)
+   local table_param = node[2]
+   if table_param
+      and table_param.var
+      and current_tables[table_param.var.name]
+   then
+      local table_name = table_param.var.name
+      local table_info = current_tables[table_name]
+
+      local removal_key = node[3]
+      if removal_key and removal_key.tag ~= "Number" then
+         if removal_key.tag == "String" and tonumber(removal_key[1]) then
+            removal_key = utils.deepcopy(removal_key)
+            removal_key.tag = "Number"
+            removal_key[1] = tonumber(removal_key[1])
+         else
+            table_info.potentially_all_set = node
+            table_info.potentially_all_accessed = node
+            return
+         end
+      end
+
+      if table_info.potentially_all_set then
+         table_info.potentially_all_set = node
+         if removal_key then
+            access_key(table_name, removal_key)
+         else
+            table_info.potentially_all_accessed = node
+         end
+         return
+      end
+
+      local max_int_key = get_table_length(table_info.set_keys)
+      if not removal_key then
+         removal_key = {
+            [1] = max_int_key > 0 and max_int_key or 1,
+            tag = "Number",
+            line = node.line,
+            offset = node.offset,
+            end_offset = node.end_offset
+         }
+      end
+
+      if max_int_key == 0 or tonumber(removal_key[1]) > max_int_key then
+         access_key(table_name, removal_key)
+         return
+      end
+
+      access_key(table_name, removal_key)
+      local nil_insert_val = {
+         tag = "Nil",
+         line = node.line,
+         offset = node.offset,
+         end_offset = node.end_offset
+      }
+      for index = tonumber(removal_key[1]), max_int_key - 1 do
+         local replaced_key
+         if table_info.set_keys[index] then
+            replaced_key = utils.deepcopy(table_info.set_keys[index].key_node)
+            replaced_key[1] = index
+         else
+            replaced_key = {
+               index,
+               line = node.line,
+               offset = node.offset,
+               end_offset = node.end_offset,
+               tag = "Number"
+            }
+         end
+         
+         local replacing_val 
+         if table_info.set_keys[index + 1] then
+            replacing_val = table_info.set_keys[index + 1].assigned_node
+         else
+            replacing_val = utils.deepcopy(nil_insert_val)
+         end
+         set_key(table_name, replaced_key, replacing_val, false)
+         if table_info.set_keys[index + 1] then
+            removal_key = utils.deepcopy(removal_key)
+            removal_key[1] = index + 1
+            access_key(table_name, removal_key)
+         end
+      end
+      removal_key = utils.deepcopy(removal_key)
+      removal_key[1] = max_int_key
+      set_key(table_name, removal_key, nil_insert_val, false)
+   end
+end
+
+-- iterator is pairs or ipairs
+local function access_all_fields(node, iterator)
+   local table_param = node[2]
+   if table_param
+      and table_param.var
+      and current_tables[table_param.var.name]
+   then
+      local table_info = current_tables[table_param.var.name]
+      if table_info.potentially_all_set then
+         table_info.potentially_all_accessed = table_param
+      else
+         for key, set_info in iterator(table_info.set_keys) do
+            if set_info and set_info.assigned_node.tag ~= "Nil" then
+               access_key(
+                  table_param.var.name,
+                  {
+                     [1] = key,
+                     tag = node.tag,
+                     line = node.line,
+                     offset = node.offset,
+                     end_offset = node.end_offset
+                  }
+               )
+            end
+         end
+      end
+   end
+end
+
+local function process_next(node)
+   local table_param = node[2]
+   if table_param
+      and table_param.var
+      and current_tables[table_param.var.name]
+   then
+      local table_info = current_tables[table_param.var.name]
+      table_info.potentially_all_accessed = node
+   end
+end
+
+-- Note: table sort will fail on gaps in the array part of the table
+-- So it's a noop in terms of which keys are defined
+local builtin_funcs = {
+   table = {
+      insert = process_table_insert,
+      remove = process_table_remove,
+      sort = noop,
+      concat = function(node) access_all_fields(node, ipairs) end
+   },
+   type = noop,
+   pairs = function(node) access_all_fields(node, pairs) end,
+   ipairs = function(node) access_all_fields(node, ipairs) end,
+   next = process_next
+}
+
 -- More complicated than record_table_accesses below
 -- Because invocation can cause accesses to a table at an arbitrary point in logic:
 -- = t[x][y:func()] causes a reference to y (passed to func)
@@ -293,9 +511,23 @@ local function record_table_invocations(node)
    end
 
    if function_call_tags[node.tag] then
-      for _, sub_node in ipairs(node) do
-         if type(sub_node) == 'table' then
-            record_table_accesses(sub_node)
+      local call_node = node[1]
+      -- Possibly a builtin table function
+      -- Custom handling for insert/remove/sort/concat/pairs/ipairs/type/next
+      if call_node.tag == "Index"
+         and builtin_funcs[call_node[1][1]]
+         and builtin_funcs[call_node[1][1]][call_node[2][1]]
+      then
+         builtin_funcs[call_node[1][1]][call_node[2][1]](node)
+      elseif call_node.tag == "Id"
+         and builtin_funcs[call_node[1]]
+      then
+         builtin_funcs[call_node[1]](node)
+      else
+         for _, sub_node in ipairs(node) do
+            if type(sub_node) == 'table' then
+               record_table_accesses(sub_node)
+            end
          end
       end
    elseif node.tag ~= "Function" then
@@ -359,7 +591,7 @@ local function detect_accesses(sub_nodes, potential_aliases)
    return alias_info
 end
 
-local function handle_control_flow_item(item, item_index, func_or_file_scope)
+local function handle_control_flow_item(item)
    if item.node and item.node.tag == "Return" then
       -- Do nothing here
       -- Recall that we assume we only handle a single control block at a time
@@ -367,20 +599,11 @@ local function handle_control_flow_item(item, item_index, func_or_file_scope)
       -- Unless there's unreachable code, but that's reported separately
       return
    else
-      -- New control flow scope
-      -- TODO: Ideally, this would check inside the child blocks using the current set of set/accessed keys
-      -- Then pass out modifications/accessed as *potential* modifications/accesses
-
-      -- Of note here: the control_flow_tags contain some duplicates, this is done deliberately
-      -- for scope safety reasons. e.g. an "if" generates the initial "If", plus a closing "Jump";
-      -- we wipe the scope both times, because if a local declared outside the if scope got assigned
-      -- a table inside the if scope, we want to check the consequences of that assignment
-      -- inside, but not assume outside the if that the table has the keys from inside
       if item.node and item.node.tag == "Do" then
          -- Simplest case: do doesn't lead to branching scope
          if item.scope_end then
-            outer_scope_current_tables = table.remove(current_tables_from_outer_scopes, #current_tables_from_outer_scopes)
-            local ended_scope_new_locals = table.remove(local_variables_per_scope, #local_variables_per_scope)
+            local outer_scope_current_tables = table.remove(current_tables_from_outer_scopes)
+            local ended_scope_new_locals = table.remove(local_variables_per_scope)
             for table_name, table_info in pairs(current_tables) do
                if ended_scope_new_locals[table_name] then
                   on_scope_end_for_var(table_name, table_info)
@@ -394,13 +617,18 @@ local function handle_control_flow_item(item, item_index, func_or_file_scope)
             table.insert(current_tables_from_outer_scopes, current_tables)
             current_tables = utils.deepcopy(current_tables)
          end
+      -- TODO: Support if/elseif/else
+      -- elseif item.node and item.node.tag == "If" then
       else
+         -- Will never support Goto/Label, they're too weird
+         -- Doesn't currently support loops; they're complicated because the end state could end up
+         -- Being the start state, i.e. they're non-linear
          stop_tracking_tables()
       end
    end
 end
 
-local function handle_local_or_set_item(item, item_index)
+local function handle_local_or_set_item(item)
    -- Process RHS first, then LHS
    -- When creating an alias, i.e. $new_var = $existing_var, need to store that info
    -- and record it during LHS processing
@@ -497,8 +725,6 @@ local function handle_eval(item)
    detect_accesses({item.node})
 end
 
-local function noop() end
-
 local item_callbacks = {
    Noop = handle_control_flow_item,
    Jump = noop,
@@ -510,10 +736,7 @@ local item_callbacks = {
 
 -- Steps through the function or file scope one item at a time
 -- At each point, tracking for each local table which fields have been set
-local function detect_unused_table_fields(func_or_file_scope, start_index, inside_control_scope)
-   start_index = start_index or 1
-   inside_control_scope = inside_control_scope or false
-
+local function detect_unused_table_fields(func_or_file_scope)
    current_tables = {}
    table.insert(local_variables_per_scope, {})
 
@@ -534,7 +757,7 @@ local function detect_unused_table_fields(func_or_file_scope, start_index, insid
       external_references_mutated[var.name] = true
    end
 
-   for item_index = start_index, #func_or_file_scope.items do
+   for item_index = 1, #func_or_file_scope.items do
       local item = func_or_file_scope.items[item_index]
       -- Add that this item potentially adds upvalue references to local variables
       -- If it contains a new function declaration
@@ -556,7 +779,7 @@ local function detect_unused_table_fields(func_or_file_scope, start_index, insid
          check_for_function_calls(item.node)
       end
 
-      item_callbacks[item.tag](item, item_index, func_or_file_scope)
+      item_callbacks[item.tag](item)
    end
 
    -- Handle implicit return
@@ -567,7 +790,7 @@ end
 -- VERY high false-negative rate, deliberately in order to minimize the false-positive rate
 function stage.run(check_state)
    chstate = check_state
-   for index, line in ipairs(chstate.lines) do
+   for _, line in ipairs(chstate.lines) do
       detect_unused_table_fields(line)
    end
 end
