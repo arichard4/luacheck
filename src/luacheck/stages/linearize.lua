@@ -166,11 +166,13 @@ local function new_eval_item(node)
    }
 end
 
-local function new_noop_item(node, scope_end)
+local function new_noop_item(node, scope_end, is_else, control_block_type)
    return {
       tag = "Noop",
       node = node,
       scope_end = scope_end,
+      is_else = is_else,
+      control_block_type = control_block_type
    }
 end
 
@@ -330,8 +332,8 @@ function LinState:emit_cond_goto(name, cond_node)
    end
 end
 
-function LinState:emit_noop(node, scope_end)
-   self:emit(new_noop_item(node, scope_end))
+function LinState:emit_noop(node, scope_end, is_else, control_block_type)
+   self:emit(new_noop_item(node, scope_end, is_else, control_block_type))
 end
 
 function LinState:emit_stmt(stmt)
@@ -351,31 +353,31 @@ function LinState:emit_block(block)
 end
 
 function LinState:emit_stmt_Do(node)
-   self:emit_noop(node)
+   self:emit_noop(node, false, false, "Do")
    self:emit_block(node)
-   self:emit_noop(node, true)
+   self:emit_noop(node, true, false, "Do")
 end
 
 function LinState:emit_stmt_While(node)
-   self:emit_noop(node)
+   self:emit_noop(node, false, false, "While")
    self:enter_scope()
    self:register_label("do")
    self:emit_expr(node[1])
    self:emit_cond_goto("break", node[1])
    self:emit_block(node[2])
-   self:emit_noop(node, true)
+   self:emit_noop(node, true, false, "While")
    self:emit_goto("do")
    self:register_label("break")
    self:leave_scope()
 end
 
 function LinState:emit_stmt_Repeat(node)
-   self:emit_noop(node)
+   self:emit_noop(node, false, false, "Repeat")
    self:enter_scope()
    self:register_label("do")
    self:enter_scope()
    self:emit_stmts(node[1])
-   self:emit_noop(node, true)
+   self:emit_noop(node, true, false, "Repeat")
    self:emit_expr(node[2])
    self:leave_scope()
    self:emit_cond_goto("do", node[2])
@@ -384,7 +386,7 @@ function LinState:emit_stmt_Repeat(node)
 end
 
 function LinState:emit_stmt_Fornum(node)
-   self:emit_noop(node)
+   self:emit_noop(node, false, false, "Fornum")
    self:emit_expr(node[2])
    self:emit_expr(node[3])
 
@@ -400,14 +402,14 @@ function LinState:emit_stmt_Fornum(node)
    self:register_var(node[1], "loopi")
    self:emit_stmts(node[5] or node[4])
    self:leave_scope()
-   self:emit_noop(node, true)
+   self:emit_noop(node, true, false, "Fornum")
    self:emit_goto("do")
    self:register_label("break")
    self:leave_scope()
 end
 
 function LinState:emit_stmt_Forin(node)
-   self:emit_noop(node)
+   self:emit_noop(node, false, false, "Forin")
    self:emit_exprs(node[2])
    self:enter_scope()
    self:register_label("do")
@@ -417,30 +419,36 @@ function LinState:emit_stmt_Forin(node)
    self:register_vars(node[1], "loop")
    self:emit_stmts(node[3])
    self:leave_scope()
-   self:emit_noop(node, true)
+   self:emit_noop(node, true, false, "Forin")
    self:emit_goto("do")
    self:register_label("break")
    self:leave_scope()
 end
 
 function LinState:emit_stmt_If(node)
-   self:emit_noop(node)
+   self:emit_noop(node, false, false, "If")
    self:enter_scope()
+
+   local has_else = #node % 2 == 1
 
    for i = 1, #node - 1, 2 do
       self:enter_scope()
       self:emit_expr(node[i])
       self:emit_cond_goto("else", node[i])
       self:emit_block(node[i + 1])
-      self:emit_noop(node, true)
       self:emit_goto("end")
+      self:emit_noop(node[i], true, false, "If")
       self:register_label("else")
       self:leave_scope()
+      if has_else or i < #node - 1 then
+         self:emit_noop(node[i + 2], false, false, "If")
+      end
    end
 
-   if #node % 2 == 1 then
+   if has_else then
       self:emit_block(node[#node])
-      self:emit_noop(node, true)
+      self:emit_goto("end")
+      self:emit_noop(node[#node], true, true, "If")
    end
 
    self:register_label("end")
@@ -452,7 +460,7 @@ function LinState:emit_stmt_Label(node)
 end
 
 function LinState:emit_stmt_Goto(node)
-   self:emit_noop(node)
+   self:emit_noop(node, false, false, "Goto")
    self:emit_goto(node[1], false, node)
 end
 
@@ -461,7 +469,7 @@ function LinState:emit_stmt_Break(node)
 end
 
 function LinState:emit_stmt_Return(node)
-   self:emit_noop(node)
+   self:emit_noop(node, false, false, "Return")
    self:emit_exprs(node)
    self:emit_goto("return")
 end

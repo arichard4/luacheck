@@ -74,29 +74,4 @@ function func(x)
 end
       ]])
    end)
-
-   -- See comments in the file
-   it("stops checking a table definition if we change scopes", function()
-      assert_warnings({
-         {code = "325", line = 3, column = 10, end_column = 10, name = 'x', field = 'z'},
-         {code = "315", line = 11, column = 6, end_column = 6, name = 'x', field = 1, set_is_nil = ''},
-         {code = "325", line = 13, column = 13, end_column = 13, name = 'x', field = 'z'},
-      }, [[
-local x = {}
-x.y = 1
-x[1] = x.z
-if true then
-   x.y = 2
-   x[2] = x.a
-end
-
-if true then
-   x = {}
-   x[1] = 1
-   x[1] = 1
-   x[3] = x.z
-end
-x[1] = x.z
-      ]])
-   end)
 end)

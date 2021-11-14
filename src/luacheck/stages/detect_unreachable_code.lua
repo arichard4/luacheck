@@ -9,7 +9,7 @@ stage.warnings = {
 
 -- Repeat is also technically a loop, but always returning in the middle
 -- results in the until evaluation being the first unreachable statement
-local loop_tags = utils.array_to_set({"While", "Fornum", "Forin"})
+local loop_types = utils.array_to_set({"While", "Fornum", "Forin"})
 
 local function noop_callback() end
 
@@ -26,7 +26,7 @@ local function detect_unreachable_code(chstate, line)
       if not reachable_indexes[item_index] then
          if item.node then
             if item.tag == "Noop" and item.scope_end then
-               if loop_tags[item.node.tag] then
+               if loop_types[item.control_block_type] then
                   chstate:warn_range("512", item.node)
                   -- Mark all items reachable from the item just reported.
                   line:walk(reachable_indexes, item_index, noop_callback)

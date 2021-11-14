@@ -20,11 +20,13 @@ local chstate
 -- A list of all local variables that are assigned tables
 local current_tables
 
--- An array of local names; each new scope *doesn't* inherit the previous scopes' locals here
--- Stored in order, i.e. the first declared local is first
--- Also includes the information about the overwritten variable, if any
--- i.e. local x = {}; do x[1] = 1; x = {} end; we need to store that the outer scope var had changes
-local local_variables_per_scope = {}
+-- Stores auxiliary information about the current scope
+local current_scope
+
+local previous_scopes = {}
+
+-- Map from item index to {has_else = true|false, array of scopes}
+local scopes_to_merge_at_index = {}
 
 -- A list of all local variables that are (1) upvalues from created functions,
 -- or (2) upvalues from outside the current scope, or (3) parameters passed in
@@ -39,6 +41,8 @@ local function new_local_table(table_name)
       -- set_keys sets store a mapping from key => {table_name, key_node, value_node}
       -- the nodes store the line/column info
       set_keys = {},
+      -- Like set_keys, but for sets than only occur in some, not all, branches
+      maybe_set_keys = {},
       -- accessed keys is a mappings from key => key_node
       accessed_keys = {},
       -- For a variable key, it's impossible to reliably get the value; any given key could be set or accessed
@@ -52,25 +56,52 @@ local function new_local_table(table_name)
    }
 end
 
-local function register_new_local(local_name)
-   local local_info = {name = local_name}
-   if current_tables[local_name] then
-      local table_info = current_tables[local_name]
-      local_info.overwritten_table_info = table_info
-      current_tables[local_name] = nil
-      table_info.aliases[local_name] = nil
-      table_info.shadowed_aliases[local_info] = true
+local function enter_new_scope(scope_node, scope_type)
+   if current_tables then
+      table.insert(previous_scopes, current_scope)
+      current_tables = utils.deepcopy(current_tables)
+   else
+      current_tables = {}
    end
-   table.insert(local_variables_per_scope[#local_variables_per_scope], local_info)
+   current_scope = {
+      -- An array of local names; each new scope *doesn't* inherit the previous scopes' locals here
+      -- Stored in order, i.e. the first declared local is first
+      -- Also includes the information about the overwritten variable, if any
+      -- i.e. local x = {}; do x[1] = 1; x = {} end; we need to store that the outer scope var had changes
+      locals = {},
+      scope_definitely_returns = false,
+      -- At the end of the current scope, where do we jump to?
+      -- Overwritten on each jump, we only care about the final one
+      -- e.g. in the case of If...end, if there's an elseif/else
+      -- we only care about the end
+      index_current_scope_jumps_to = nil,
+      current_tables = current_tables,
+      scope_node = scope_node,
+      scope_type = scope_type
+   }
 end
 
-local function has_local(local_name)
-   for _, var_info in pairs(local_variables_per_scope[#local_variables_per_scope]) do
+local function cur_scope_has_local(local_name)
+   for _, var_info in pairs(current_scope.locals) do
       if var_info.name == local_name then
          return true
       end
    end
    return false
+end
+
+local function register_new_local(local_name)
+   if not cur_scope_has_local(local_name) then
+      local local_info = {name = local_name}
+      if current_tables[local_name] then
+         local table_info = current_tables[local_name]
+         local_info.overwritten_table_info = table_info
+         current_tables[local_name] = nil
+         table_info.aliases[local_name] = nil
+         table_info.shadowed_aliases[local_info] = true
+      end
+      table.insert(current_scope.locals, local_info)
+   end
 end
 
 -- Stop trying to track a table
@@ -89,8 +120,7 @@ end
 -- Either the table is gone, or the field has been overwritten
 -- Table info can be different from the value of current_tables[table_name]
 -- In the case that the original table was removed but an alias is still relevant
-local function maybe_warn_unused(table_info, key)
-   local set_data = table_info.set_keys[key]
+local function maybe_warn_unused(table_info, key, set_data)
    local set_table_name, set_node, assigned_val = set_data.table_name, set_data.key_node, set_data.assigned_node
    local access_node = table_info.accessed_keys[key]
    local all_access_node = table_info.potentially_all_accessed
@@ -98,6 +128,25 @@ local function maybe_warn_unused(table_info, key)
    if (not access_node or access_node.line < set_node.line)
       and (not all_access_node or all_access_node.line < set_node.line)
    then
+      -- if it's from a branching previous scope, don't report here
+      -- i.e. an overwrite in one "if" branch shouldn't produce a warning
+      for scope_index = #previous_scopes, 1, -1 do
+         local outer_scope = previous_scopes[scope_index]
+         if outer_scope.current_tables[set_table_name]
+            and ((outer_scope.current_tables[set_table_name].set_keys[key]
+            and outer_scope.current_tables[set_table_name].set_keys[key].key_node.line == set_node.line)
+            or (outer_scope.current_tables[set_table_name].maybe_set_keys[key]
+            and outer_scope.current_tables[set_table_name].maybe_set_keys[key]))
+         then
+            -- Between the new set and the earliest accessible set, is there an "If" scope?
+            if outer_scope.scope_type == "If" or current_scope.scope_type == "If" then
+               return
+            end
+         else
+            break
+         end
+      end
+
       -- table.insert/table.remove can push around keys internally, so use the set_node's key
       local original_key = set_node.tag == "Number" and tonumber(set_node[1]) or set_node[1]
       chstate:warn_range("315", set_node, {
@@ -110,13 +159,14 @@ end
 
 -- Called on accessing a table's field
 local function maybe_warn_undefined(table_name, key, range)
+   local table_info = current_tables[table_name]
    -- Warn if the field is definitely not set
-   local set_data = current_tables[table_name].set_keys[key]
+   local set_data = table_info.set_keys[key] or table_info.maybe_set_keys[key]
    local set_node, set_val
    if set_data then
       set_node, set_val = set_data.key_node, set_data.assigned_node
    end
-   local all_set = current_tables[table_name].potentially_all_set
+   local all_set = table_info.potentially_all_set
    if (not set_data and not all_set)
       or (set_data and set_val.tag == "Nil" and (not all_set or set_node.line > all_set.line))
    then
@@ -137,6 +187,11 @@ local function maybe_warn_undefined_var_key(table_name, var_key_name, range)
          potentially_set = true
       end
    end
+   for _, set_data in pairs(current_tables[table_name].maybe_set_keys) do
+      if set_data.assigned_node.tag ~= "Nil" then
+         potentially_set = true
+      end
+   end
    if not potentially_set then
       chstate:warn_range("325", range, {
          name = table_name,
@@ -150,13 +205,22 @@ local function set_key(table_name, key_node, assigned_val, in_init)
    local table_info = current_tables[table_name]
    -- Constant key
    if key_node.tag == "Number" or key_node.tag == "String" then
+      -- Don't warn about unused nil initializations
+      -- Fairly common to declare that a table should end up with fields set
+      -- by setting them to nil in the constructor
+      if in_init and assigned_val.tag == "Nil" then
+         return
+      end
       local key = key_node[1]
       if key_node.tag == "Number" then
          key = tonumber(key)
       end
       -- Don't report duplicate keys in the init; other module handles that
       if table_info.set_keys[key] and not in_init then
-         maybe_warn_unused(table_info, key)
+         maybe_warn_unused(table_info, key, table_info.set_keys[key])
+      end
+      if table_info.maybe_set_keys[key] then
+         maybe_warn_unused(table_info, key, table_info.maybe_set_keys[key])
       end
       table_info.accessed_keys[key] = nil
       -- Do note: just because a table's key has a value in set_keys doesn't
@@ -202,8 +266,11 @@ local function end_table_variable(table_name)
 
    if next(table_info.aliases) == nil then
       if next(table_info.shadowed_aliases) == nil then
-         for key in pairs(table_info.set_keys) do
-            maybe_warn_unused(table_info, key)
+         for key, set_data in pairs(table_info.set_keys) do
+            maybe_warn_unused(table_info, key, set_data)
+         end
+         for key, set_data in pairs(table_info.maybe_set_keys) do
+            maybe_warn_unused(table_info, key, set_data)
          end
       end
    end
@@ -218,6 +285,9 @@ local function stop_tracking_tables()
    for table_name in pairs(current_tables) do
       wipe_table_data(table_name)
    end
+
+   scopes_to_merge_at_index = {}
+   current_scope.locals = {}
 end
 
 local function on_scope_end_for_var(table_name)
@@ -351,7 +421,7 @@ local function process_table_insert(node)
       end
       if not insert_key then
          local table_info = current_tables[table_param.var.name]
-         if table_info.potentially_all_set then
+         if table_info.potentially_all_set or next(table_info.maybe_set_keys) ~= nil then
             table_info.potentially_all_set = node
             return
          else
@@ -402,7 +472,7 @@ local function process_table_remove(node)
          end
       end
 
-      if table_info.potentially_all_set then
+      if table_info.potentially_all_set or next(table_info.maybe_set_keys) ~= nil then
          table_info.potentially_all_set = node
          if removal_key then
             access_key(table_name, removal_key)
@@ -494,6 +564,21 @@ local function access_all_fields(node, iterator)
                )
             end
          end
+         for key, set_info in pairs(table_info.maybe_set_keys) do
+            -- Assume that ipairs accesses all numeric keys
+            if iterator == pairs or type(key) == "number" then
+               access_key(
+                  table_param.var.name,
+                  {
+                     [1] = key,
+                     tag = node.tag,
+                     line = node.line,
+                     offset = node.offset,
+                     end_offset = node.end_offset
+                  }
+               )
+            end
+         end
       end
    end
 end
@@ -545,6 +630,7 @@ local function record_table_invocations(node)
       then
          builtin_funcs[call_node[1][1]][call_node[2][1]](node)
       elseif call_node.tag == "Id"
+         and call_node[1] ~= "table"
          and builtin_funcs[call_node[1]]
       then
          builtin_funcs[call_node[1]](node)
@@ -618,18 +704,19 @@ local function detect_accesses(sub_nodes, potential_aliases)
 end
 
 local function handle_control_flow_item(item)
-   if item.node and item.node.tag == "Return" then
+   if item.node and item.control_block_type == "Return" then
       -- Do nothing here
       -- Recall that we assume we only handle a single control block at a time
       -- So we can fall through to the end-of-scope check
       -- Unless there's unreachable code, but that's reported separately
+      current_scope.scope_definitely_returns = true
       return
    else
-      if item.node and item.node.tag == "Do" then
+      if item.node and item.control_block_type == "Do" then
          -- Simplest case: do doesn't lead to branching scope
          if item.scope_end then
-            local ended_scope_new_locals = table.remove(local_variables_per_scope)
-            for _,var_info in utils.ripairs(ended_scope_new_locals) do
+            local has_return = current_scope.scope_definitely_returns
+            for _,var_info in utils.ripairs(current_scope.locals) do
                local var_name, table_info = var_info.name, var_info.overwritten_table_info
                if current_tables[var_name] then
                   on_scope_end_for_var(var_name)
@@ -646,17 +733,64 @@ local function handle_control_flow_item(item)
                   table_info.shadowed_aliases[var_info] = nil
                end
             end
+            current_scope = table.remove(previous_scopes)
+            current_scope.scope_definitely_returns = has_return
+            current_scope.current_tables = current_tables
          else
-            table.insert(local_variables_per_scope, {})
-            current_tables = utils.deepcopy(current_tables)
+            enter_new_scope(item.node, "Do")
          end
-      -- TODO: Support if/elseif/else
-      -- elseif item.node and item.node.tag == "If" then
+      elseif item.node and item.control_block_type == "If" then
+         if item.scope_end then
+            local has_return = current_scope.scope_definitely_returns
+            local dest_index = current_scope.index_current_scope_jumps_to
+            if not scopes_to_merge_at_index[dest_index] then
+               scopes_to_merge_at_index[dest_index] = {
+                  has_else = false,
+                  always_returning_scopes = {}
+               }
+            end
+            for _,var_info in utils.ripairs(current_scope.locals) do
+               local var_name, table_info = var_info.name, var_info.overwritten_table_info
+               if current_tables[var_name] then
+                  on_scope_end_for_var(var_name)
+               end
+               if table_info then
+                  for alias in pairs(table_info.aliases) do
+                     if current_tables[alias] then
+                        table_info = current_tables[alias]
+                        break
+                     end
+                  end
+                  current_tables[var_name] = table_info
+                  table_info.aliases[var_name] = true
+                  table_info.shadowed_aliases[var_info] = nil
+               end
+            end
+            if has_return then
+               table.insert(scopes_to_merge_at_index[dest_index].always_returning_scopes, current_scope)
+            else
+               table.insert(scopes_to_merge_at_index[dest_index], current_scope)
+            end
+            if item.is_else then
+               scopes_to_merge_at_index[dest_index].has_else = true
+            end
+            current_scope = table.remove(previous_scopes)
+            current_tables = current_scope.current_tables
+         else
+            enter_new_scope(item.node, "If")
+         end
       else
          -- Will never support Goto/Label, they're too weird
          -- Doesn't currently support loops; they're complicated because the end state could end up
          -- Being the start state, i.e. they're non-linear
          stop_tracking_tables()
+         if item.scope_end then
+            current_scope = table.remove(previous_scopes)
+            current_tables = current_scope.current_tables
+            stop_tracking_tables()
+         else
+            enter_new_scope(item.node, "???")
+         end
       end
    end
 end
@@ -710,9 +844,7 @@ local function handle_local_or_set_item(item)
       -- Also handles backing up shadowed values
       if item.tag == "Local" then
          if lhs_node.tag == "Id" then
-            if not has_local(lhs_node.var.name) then
-               register_new_local(lhs_node.var.name)
-            end
+            register_new_local(lhs_node.var.name)
          end
       end
 
@@ -741,6 +873,7 @@ local function handle_local_or_set_item(item)
                -- Vararg can expand to arbitrary size;
                -- Function calls can return multiple values
                current_tables[table_var.name].potentially_all_set = node
+               break
             elseif node.tag ~= "Nil" then
                -- Duck typing, meh
                local key_node = {
@@ -761,20 +894,182 @@ local function handle_eval(item)
    detect_accesses({item.node})
 end
 
+local function update_cur_scope_jumps(item)
+   current_scope.index_current_scope_jumps_to = item.to
+end
+
 local item_callbacks = {
    Noop = handle_control_flow_item,
-   Jump = noop,
-   Cjump = noop,
+   Jump = update_cur_scope_jumps,
+   Cjump = update_cur_scope_jumps,
    Eval = handle_eval,
    Local = handle_local_or_set_item,
    Set = handle_local_or_set_item
 }
 
+local function merge_in_scope_accesses(always_returning_scopes)
+   for table_name, table_info in pairs(current_tables) do
+      for _,scope in ipairs(always_returning_scopes) do
+         local scope_table_info = scope.current_tables[table_name]
+         if scope_table_info then
+            if not table_info.potentially_all_accessed
+               or scope_table_info.potentially_all_accessed.line > table_info.potentially_all_accessed.line
+            then
+               table_info.potentially_all_accessed = scope_table_info.potentially_all_accessed
+            end
+            for key, access_info in pairs(scope_table_info.accessed_keys) do
+               if not table_info.accessed_keys[key]
+                  or access_info.line > table_info.accessed_keys[key].line
+               then
+                  table_info.accessed_keys[key] = access_info
+               end
+            end
+         else
+            -- If the table went out of scope in a returned scope, don't wipe it, but mark all fields as
+            -- potentially accessed
+            table_info.potentially_all_accessed = scope.scope_node
+         end
+      end
+   end
+end
+
+-- local x = {1}; if 1 then x[1] = 2 else x[1] = 3 end
+-- Need to check at branch scope end for keys overwritten on all branches
+local function check_for_overwritten_keys(prev_tables)
+   for table_name, prev_table_info in pairs(prev_tables) do
+      if current_tables[table_name] then
+         for key, set_info in pairs(prev_table_info.set_keys) do
+            local new_set_info = current_tables[table_name].set_keys[key]
+               or current_tables[table_name].maybe_set_keys[key]
+            if not new_set_info or new_set_info.key_node.line > set_info.key_node.line then
+               maybe_warn_unused(prev_table_info, key, set_info)
+            end
+         end
+      end
+   end
+end
+
+local function merge_scopes_at_index(index)
+   local scopes = scopes_to_merge_at_index[index]
+   if not scopes then return end
+   if #scopes == 0 then
+      if scopes.has_else then
+         current_scope.scope_definitely_returns = true
+      end
+      merge_in_scope_accesses(scopes.always_returning_scopes)
+      return
+   end
+
+   if #scopes == 1 and scopes.has_else then
+      local prev_tables = current_tables
+      current_tables = scopes[1].current_tables
+      current_scope.current_tables = current_tables
+      merge_in_scope_accesses(scopes.always_returning_scopes)
+      check_for_overwritten_keys(prev_tables)
+      return
+   end
+
+   if not scopes.has_else then
+      table.insert(scopes, 1, current_scope)
+   end
+
+   -- Get variables that are tables in all merged scopes
+   local table_names = {}
+   for table_name in pairs(scopes[1].current_tables) do
+      table_names[table_name] = true
+   end
+   for scope_index = 2, #scopes do
+      local tables = scopes[scope_index].current_tables
+      for table_name in pairs(table_names) do
+         if not tables[table_name] then
+            table_names[table_name] = nil
+         end
+      end
+   end
+
+   -- For those variables, make set_keys the intersection of the various scopes' set_keys
+   -- Add maybe_set_keys for keys only set in some scopes
+   -- Make potentially_all_set and potentially_all_accessed the 'or' of the various values
+   -- Makes accessed_keys the union of the various values
+   -- If the aliases aren't identical, wipe the table data for all aliases (unanalyzable)
+   local prev_tables = current_tables
+   current_tables = {}
+   local unanalyzable_tables = {}
+   for table_name in pairs(table_names) do
+      new_local_table(table_name)
+      local table_info = current_tables[table_name]
+      table_info.aliases = scopes[1].current_tables[table_name].aliases
+      -- Track how many branches each key is set in
+      local maybe_set_keys = {}
+      local set_keys = {}
+      for _,scope in utils.ripairs(scopes) do
+         local scope_table_info = scope.current_tables[table_name]
+         -- Order matters, due to line number checks later values should always overwrite earlier ones
+         for key, set_info in pairs(scope_table_info.set_keys) do
+            local prev_count = set_keys[key] and set_keys[key][1] or 0
+            -- Prefer non-nil set_info even if earlier
+            set_info = (set_keys[key] and set_keys[key][2].assigned_node.line < set_info.assigned_node.line)
+               and set_keys[key][2]
+               or set_info
+            set_keys[key] = {prev_count + 1, set_info}
+         end
+         for key, set_info in pairs(scope_table_info.maybe_set_keys) do
+            if not maybe_set_keys[key] or set_info.assigned_node.tag ~= "Nil" then
+               maybe_set_keys[key] = set_info
+            end
+         end
+         table_info.potentially_all_set = scope_table_info.potentially_all_set or table_info.potentially_all_set
+         table_info.potentially_all_accessed = table_info.potentially_all_accessed
+            or scope_table_info.potentially_all_accessed
+         for key, access_info in pairs(scope_table_info.accessed_keys) do
+            table_info.accessed_keys[key] = access_info
+         end
+         for alias in pairs(scope_table_info.aliases) do
+            if not table_info.aliases[alias] then
+               unanalyzable_tables[table_name] = true
+               table_info.aliases[alias] = true
+            end
+         end
+      end
+
+      merge_in_scope_accesses(scopes.always_returning_scopes)
+
+      for key, set_data in pairs(set_keys) do
+         local set_branch_count, set_info = set_data[1], set_data[2]
+         if set_branch_count == #scopes then
+            table_info.set_keys[key] = set_info
+         else
+            table_info.maybe_set_keys[key] = set_info
+         end
+      end
+
+      for key, set_data in pairs(maybe_set_keys) do
+         if table_info.maybe_set_keys[key] then
+            local other_set = table_info.maybe_set_keys[key]
+            if other_set.assigned_node.tag ~= "Nil" then
+               if set_data.assigned_node.tag == "Nil"
+                  or other_set.key_node.line > set_data.key_node.line
+               then
+                  set_data = other_set
+               end
+            end
+         end
+
+         table_info.maybe_set_keys[key] = set_data
+      end
+   end
+
+   for table_name in pairs(unanalyzable_tables) do
+      wipe_table_data(table_name)
+   end
+   current_scope.current_tables = current_tables
+   check_for_overwritten_keys(prev_tables)
+end
+
 -- Steps through the function or file scope one item at a time
 -- At each point, tracking for each local table which fields have been set
 local function detect_unused_table_fields(func_or_file_scope)
-   current_tables = {}
-   table.insert(local_variables_per_scope, {})
+   enter_new_scope(func_or_file_scope.node, "???")
 
    external_references_set, external_references_accessed, external_references_mutated = {}, {}, {}
    local args = func_or_file_scope.node[1]
@@ -794,7 +1089,10 @@ local function detect_unused_table_fields(func_or_file_scope)
    end
 
    for item_index = 1, #func_or_file_scope.items do
+      merge_scopes_at_index(item_index)
+
       local item = func_or_file_scope.items[item_index]
+
       -- Add that this item potentially adds upvalue references to local variables
       -- If it contains a new function declaration
       if item.lines then
@@ -818,8 +1116,18 @@ local function detect_unused_table_fields(func_or_file_scope)
       item_callbacks[item.tag](item)
    end
 
+   merge_scopes_at_index(#func_or_file_scope.items + 1)
+
    -- Handle implicit return
    on_scope_end()
+
+   current_scope = nil
+   current_tables = nil
+   external_references_accessed = {}
+   external_references_mutated = {}
+   external_references_set = {}
+   previous_scopes = {}
+   scopes_to_merge_at_index = {}
 end
 
 -- Warns about table fields that are never accessed

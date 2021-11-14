@@ -113,7 +113,7 @@ print(x[1][1])
    end)
 
    -- Handled separately, in detect_unused_fields
-   it("doesn't detect duplicate keys in initialization", function()
+   it("doesn't warn on duplicate keys in initialization", function()
       assert_warnings({}, [[
 local x = {key = 1, key = 1}
 local y = {1, [1] = 1}
@@ -121,7 +121,14 @@ return x,y
       ]])
    end)
 
-   -- Handled separately, in detect_unused_fields
+   it("doesn't warn on overwritten nil-sets in constructor", function()
+      assert_warnings({}, [[
+local t = {key = nil}
+t.key = 1
+return t
+      ]])
+   end)
+
    it("doesn't warn on unused fields of parameters", function()
       assert_warnings({}, [[
 local function func(x)
@@ -237,21 +244,6 @@ local y = {}
 y.y = 1
 y = {}
 y.y = 1
-      ]])
-   end)
-
-   it("doesn't track table overwrites or unused fields inside control blocks", function()
-      assert_warnings({}, [[
-local x = {}
-local y
-x.y = 1
-if true then
-   x = {}
-   y = {}
-   y[1] = 1
-   x[1] = 1
-end
-x[2] = x[3]
       ]])
    end)
 
