@@ -20,10 +20,10 @@ local chstate
 -- A list of all local variables that are assigned tables
 local current_tables
 
--- When entering a new control flow block, we save the previous state of current_tables
-local current_tables_from_outer_scopes = {}
-
--- An array of {local_name => true}; each new scope *doesn't* inherit the previous scopes' locals here
+-- An array of local names; each new scope *doesn't* inherit the previous scopes' locals here
+-- Stored in order, i.e. the first declared local is first
+-- Also includes the information about the overwritten variable, if any
+-- i.e. local x = {}; do x[1] = 1; x = {} end; we need to store that the outer scope var had changes
 local local_variables_per_scope = {}
 
 -- A list of all local variables that are (1) upvalues from created functions,
@@ -47,8 +47,30 @@ local function new_local_table(table_name)
       potentially_all_accessed = nil,
       -- Multiple variable names that point at the same underlying table
       -- e.g. local x = {}; local t = x
-      aliases = {[table_name] = true}
+      aliases = {[table_name] = true},
+      shadowed_aliases = {},
    }
+end
+
+local function register_new_local(local_name)
+   local local_info = {name = local_name}
+   if current_tables[local_name] then
+      local table_info = current_tables[local_name]
+      local_info.overwritten_table_info = table_info
+      current_tables[local_name] = nil
+      table_info.aliases[local_name] = nil
+      table_info.shadowed_aliases[local_info] = true
+   end
+   table.insert(local_variables_per_scope[#local_variables_per_scope], local_info)
+end
+
+local function has_local(local_name)
+   for _, var_info in pairs(local_variables_per_scope[#local_variables_per_scope]) do
+      if var_info.name == local_name then
+         return true
+      end
+   end
+   return false
 end
 
 -- Stop trying to track a table
@@ -179,8 +201,10 @@ local function end_table_variable(table_name)
    table_info.aliases[table_name] = nil
 
    if next(table_info.aliases) == nil then
-      for key in pairs(table_info.set_keys) do
-         maybe_warn_unused(table_info, key)
+      if next(table_info.shadowed_aliases) == nil then
+         for key in pairs(table_info.set_keys) do
+            maybe_warn_unused(table_info, key)
+         end
       end
    end
 
@@ -196,7 +220,8 @@ local function stop_tracking_tables()
    end
 end
 
-local function on_scope_end_for_var(table_name, table_info)
+local function on_scope_end_for_var(table_name)
+   local table_info = current_tables[table_name]
    local has_external_references = false
    for alias in pairs(table_info.aliases) do
       if external_references_accessed[alias] then
@@ -211,8 +236,8 @@ local function on_scope_end_for_var(table_name, table_info)
 end
 
 local function on_scope_end()
-   for table_name, table_info in pairs(current_tables) do
-      on_scope_end_for_var(table_name, table_info)
+   for table_name in pairs(current_tables) do
+      on_scope_end_for_var(table_name)
    end
 end
 
@@ -424,8 +449,8 @@ local function process_table_remove(node)
                tag = "Number"
             }
          end
-         
-         local replacing_val 
+
+         local replacing_val
          if table_info.set_keys[index + 1] then
             replacing_val = table_info.set_keys[index + 1].assigned_node
          else
@@ -545,7 +570,6 @@ end
 function record_table_accesses(node, aliased_node)
    record_table_invocations(node)
 
-   local alias_info = nil
    -- t[x or y] = val; x = t1 or t2
    if node[1] == "and" or node[1] == "or" then
       for _, sub_node in ipairs(node) do
@@ -568,7 +592,9 @@ function record_table_accesses(node, aliased_node)
       end
    end
 
+   local alias_info = nil
    if node.var and current_tables[node.var.name] then
+      -- $lhs = $tracked_table
       if aliased_node and aliased_node.var then
          alias_info = {aliased_node.var.name, node.var.name}
       else
@@ -602,19 +628,26 @@ local function handle_control_flow_item(item)
       if item.node and item.node.tag == "Do" then
          -- Simplest case: do doesn't lead to branching scope
          if item.scope_end then
-            local outer_scope_current_tables = table.remove(current_tables_from_outer_scopes)
             local ended_scope_new_locals = table.remove(local_variables_per_scope)
-            for table_name, table_info in pairs(current_tables) do
-               if ended_scope_new_locals[table_name] then
-                  on_scope_end_for_var(table_name, table_info)
-               else
-                  outer_scope_current_tables[table_name] = table_info
+            for _,var_info in utils.ripairs(ended_scope_new_locals) do
+               local var_name, table_info = var_info.name, var_info.overwritten_table_info
+               if current_tables[var_name] then
+                  on_scope_end_for_var(var_name)
+               end
+               if table_info then
+                  for alias in pairs(table_info.aliases) do
+                     if current_tables[alias] then
+                        table_info = current_tables[alias]
+                        break
+                     end
+                  end
+                  current_tables[var_name] = table_info
+                  table_info.aliases[var_name] = true
+                  table_info.shadowed_aliases[var_info] = nil
                end
             end
-            current_tables = outer_scope_current_tables
          else
             table.insert(local_variables_per_scope, {})
-            table.insert(current_tables_from_outer_scopes, current_tables)
             current_tables = utils.deepcopy(current_tables)
          end
       -- TODO: Support if/elseif/else
@@ -674,9 +707,18 @@ local function handle_local_or_set_item(item)
          end
       end
 
+      -- Also handles backing up shadowed values
+      if item.tag == "Local" then
+         if lhs_node.tag == "Id" then
+            if not has_local(lhs_node.var.name) then
+               register_new_local(lhs_node.var.name)
+            end
+         end
+      end
+
       -- Case: $existing_table = new_value
       -- Complete overwrite of previous value
-      if item.tag == "Set" and lhs_node.var and current_tables[lhs_node.var.name] then
+      if lhs_node.var and current_tables[lhs_node.var.name] then
          end_table_variable(lhs_node.var.name)
       end
 
@@ -684,12 +726,6 @@ local function handle_local_or_set_item(item)
          local new_var_name, existing_var_name = alias_info[index][1], alias_info[index][2]
          current_tables[new_var_name] = current_tables[existing_var_name]
          current_tables[new_var_name].aliases[new_var_name] = true
-      end
-
-      if item.tag == "Local" then
-         if lhs_node.tag == "Id" then
-            local_variables_per_scope[#local_variables_per_scope][lhs_node.var.name] = true
-         end
       end
 
       -- Case: local $table = {} or local $table; $table = {}
@@ -743,7 +779,7 @@ local function detect_unused_table_fields(func_or_file_scope)
    external_references_set, external_references_accessed, external_references_mutated = {}, {}, {}
    local args = func_or_file_scope.node[1]
    for _, parameter in ipairs(args) do
-      local_variables_per_scope[#local_variables_per_scope][parameter.var.name] = true
+      register_new_local(parameter.var.name)
       external_references_accessed[parameter.var.name] = true
       external_references_mutated[parameter.var.name] = true
    end
