@@ -11,7 +11,6 @@ describe("table field checks", function()
          {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
          {code = "315", line = 4, column = 3, end_column = 3, name = 'x', field = 1, set_is_nil = ''},
          {code = "325", line = 4, column = 10, end_column = 10, name = 'x', field = 'z'},
-         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 'a', set_is_nil = ''},
          {code = "325", line = 5, column = 9, end_column = 9, name = 'x', field = 'a'},
          {code = "315", line = 6, column = 12, end_column = 15, name = 'x', field = 'func', set_is_nil = ''},
       }, [[
@@ -93,7 +92,9 @@ function x.func() x = 1 end
    end)
 
    it("handles complicated upvalue sets", function()
-      assert_warnings({}, [[
+      assert_warnings({
+         {code = "315", line = 5, column = 3, end_column = 3, name = 'x', field = 1, set_is_nil = ''},
+      }, [[
 local x = {}
 x[1] = {}
 x[1][1] = function() x = {} end

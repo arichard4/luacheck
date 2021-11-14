@@ -226,15 +226,17 @@ print(x[2])
       assert_warnings({}, [[
 local t = {1}
 if undef_global then
-   for _, _ in pairs(t) do end
+   goto done
 end
 print(t[2])
 
 local y = {1}
 do
-   for _, _ in pairs(y) do end
+   goto done
 end
 print(y[2])
+
+::done::
       ]])
    end)
 
@@ -394,6 +396,20 @@ if math.random(2) == 1 then
   def_db_strategies = {1}
 end
 return def_db_strategies
+      ]])
+   end)
+
+   it("doesn't warn on overwritten keys with accesses before the overwrite", function()
+      assert_warnings({}, [[
+local t = {key = 1}
+
+if t.key > 10 then
+    t.key = t.key + 10
+else
+    t.key = t.key + 11
+end
+
+return t
       ]])
    end)
 

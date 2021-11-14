@@ -38,7 +38,7 @@ return x
    end)
 
    -- Because of possible multiple return (TODO is to try to examine the function for multiple return)
-   it("assumes tables initialized from function can have arbitrary keys set", function()
+   it("assumes tables initialized from functions can have arbitrary keys set", function()
       assert_warnings({
          {code = "315", line = 3, column = 3, end_column = 3, name = 'x', field = 'y', set_is_nil = ''},
       }, [[
@@ -48,18 +48,18 @@ x.y = x[2]
       ]])
    end)
 
-   it("stops checking referenced upvalues even if function call is known to not have table as an upvalue", function()
+   it("doesn't check if a specific function call has a specific table as an upvalue", function()
       assert_warnings({}, [[
 local x = {}
 x[1] = 1
-local function printx() x = 1 end
+local function printx() print(x) end
 local function ret2() return 2 end
 ret2()
 x[1] = 1
 
 local y = {}
 y[1] = 1
-function y.printx() y = 1 end
+function y.printy() print(y) end
 function y.ret2() return 2 end
 y.ret2()
 y[1] = 1
