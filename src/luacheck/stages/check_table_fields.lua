@@ -12,6 +12,7 @@ stage.warnings = {
 }
 
 local function_call_tags = utils.array_to_set({"Call", "Invoke"})
+local loop_types = utils.array_to_set({"While", "Fornum", "Forin", "Repeat"})
 
 local function noop() end
 
@@ -81,8 +82,8 @@ local function enter_new_scope(scope_node, scope_type)
    }
 end
 
-local function cur_scope_has_local(local_name)
-   for _, var_info in pairs(current_scope.locals) do
+local function scope_has_local(scope, local_name)
+   for _, var_info in pairs(scope.locals) do
       if var_info.name == local_name then
          return true
       end
@@ -90,8 +91,26 @@ local function cur_scope_has_local(local_name)
    return false
 end
 
+-- Detects the following case:
+-- local t = {}; for i=1,10 do table.insert(t, 1) end
+local function is_table_from_outside_loop(table_name)
+   if scope_has_local(current_scope, table_name) then
+      return false
+   end
+   local has_encountered_loop_scope = loop_types[current_scope.scope_type] or false
+   for _, scope in utils.ripairs(previous_scopes) do
+      if scope_has_local(scope, table_name) then
+         break
+      end
+      if loop_types[scope.scope_type] then
+         has_encountered_loop_scope = true
+      end
+   end
+   return has_encountered_loop_scope
+end
+
 local function register_new_local(local_name)
-   if not cur_scope_has_local(local_name) then
+   if not scope_has_local(current_scope, local_name) then
       local local_info = {name = local_name}
       if current_tables[local_name] then
          local table_info = current_tables[local_name]
@@ -147,6 +166,10 @@ local function maybe_warn_unused(table_info, key, set_data)
          end
       end
 
+      if is_table_from_outside_loop(set_table_name) then
+         return
+      end
+
       -- table.insert/table.remove can push around keys internally, so use the set_node's key
       local original_key = set_node.tag == "Number" and tonumber(set_node[1]) or set_node[1]
       chstate:warn_range("315", set_node, {
@@ -159,6 +182,11 @@ end
 
 -- Called on accessing a table's field
 local function maybe_warn_undefined(table_name, key, range)
+   -- Loops can produce a different starting value for tables than expected
+   -- Don't attempt to handle this case for now
+   if is_table_from_outside_loop(table_name) then
+      return
+   end
    local table_info = current_tables[table_name]
    -- Warn if the field is definitely not set
    local set_data = table_info.set_keys[key] or table_info.maybe_set_keys[key]
@@ -180,6 +208,11 @@ end
 -- Called on accessing a table's field with an unknown key
 -- Can only warn if the table is known to be empty
 local function maybe_warn_undefined_var_key(table_name, var_key_name, range)
+   -- Loops can produce a different starting value for tables than expected
+   -- Don't attempt to handle this case for now
+   if is_table_from_outside_loop(table_name) then
+      return
+   end
    -- Are there any non-nil keys at all?
    if current_tables[table_name].potentially_all_set then
       return
@@ -431,7 +464,10 @@ local function process_table_insert(node)
       end
       if not insert_key then
          local table_info = current_tables[table_param.var.name]
-         if table_info.potentially_all_set or next(table_info.maybe_set_keys) ~= nil then
+         if table_info.potentially_all_set
+            or next(table_info.maybe_set_keys) ~= nil
+            or is_table_from_outside_loop(table_param.var.name)
+         then
             table_info.potentially_all_set = node
             return
          else
@@ -444,7 +480,6 @@ local function process_table_insert(node)
                offset = node.offset,
                end_offset = node.end_offset
             }
-
          end
       end
       set_key(table_param.var.name, insert_key, inserted_val, false)
@@ -473,7 +508,10 @@ local function process_table_remove(node)
          end
       end
 
-      if table_info.potentially_all_set or next(table_info.maybe_set_keys) ~= nil then
+      if table_info.potentially_all_set
+         or is_table_from_outside_loop(table_name)
+         or next(table_info.maybe_set_keys) ~= nil
+      then
          table_info.potentially_all_set = node
          if removal_key then
             access_key(table_name, removal_key)
@@ -548,7 +586,9 @@ local function access_all_fields(node, iterator)
       and current_tables[table_param.var.name]
    then
       local table_info = current_tables[table_param.var.name]
-      if table_info.potentially_all_set then
+      if table_info.potentially_all_set
+         or is_table_from_outside_loop(table_param.var.name)
+      then
          table_info.potentially_all_accessed = table_param
       else
          for key, set_info in iterator(table_info.set_keys) do
@@ -766,10 +806,25 @@ local function handle_control_flow_item(item)
       else
          enter_new_scope(item.node, item.control_block_type)
       end
+   elseif loop_types[item.control_block_type] then
+      -- Loops are tremendously difficult to support
+      -- Because they can have an initial state that differs from the state from the block before the loop
+      -- And because they can execute multiple times
+      -- Ideally, this would track assignments through to the end, then re-analyze
+      -- TODO
+      -- Too complicated for now, so instead I'll do the dumbest way to handle it: ignore accesses
+      -- to non-locals in loops, assume that table.remove can access anything and table.insert can
+      -- insert anything
+      if item.scope_end then
+         -- Another simplification: *in theory*, a loop could not be entered.
+         -- *In practice*, that doesn't matter here: any logic done inside a loop can't produce false positives
+         current_scope = table.remove(previous_scopes)
+         current_scope.current_tables = current_tables
+      else
+         enter_new_scope(item.node, item.control_block_type)
+      end
    else
       -- Will never support Goto/Label, they're too weird
-      -- Doesn't currently support loops; they're complicated because the end state could end up
-      -- Being the start state, i.e. they're non-linear
       stop_tracking_tables()
       if item.scope_end then
          current_scope = table.remove(previous_scopes)
@@ -835,16 +890,19 @@ local function handle_local_or_set_item(item)
          end
       end
 
-      -- Case: $existing_table = new_value
-      -- Complete overwrite of previous value
-      if lhs_node.var and current_tables[lhs_node.var.name] then
-         end_table_variable(lhs_node.var.name)
-      end
-
       if alias_info[index] then
          local new_var_name, existing_var_name = alias_info[index][1], alias_info[index][2]
          current_tables[new_var_name] = current_tables[existing_var_name]
          current_tables[new_var_name].aliases[new_var_name] = true
+      end
+
+      -- Case: $existing_table = new_value
+      -- Complete overwrite of previous value
+      if lhs_node.var and current_tables[lhs_node.var.name] then
+         -- $existing_table = $existing_table should do nothing
+         if not (rhs_node.var and rhs_node.var.name == lhs_node.var.name) then
+            end_table_variable(lhs_node.var.name)
+         end
       end
 
       -- Case: local $table = {} or local $table; $table = {}
@@ -901,7 +959,8 @@ local function merge_in_scope_accesses(always_returning_scopes)
          local scope_table_info = scope.current_tables[table_name]
          if scope_table_info then
             if not table_info.potentially_all_accessed
-               or scope_table_info.potentially_all_accessed.line > table_info.potentially_all_accessed.line
+               or (scope_table_info.potentially_all_accessed
+                  and scope_table_info.potentially_all_accessed.line > table_info.potentially_all_accessed.line)
             then
                table_info.potentially_all_accessed = scope_table_info.potentially_all_accessed
             end
@@ -1048,7 +1107,9 @@ local function merge_scopes_at_index(index)
    end
 
    for table_name in pairs(unanalyzable_tables) do
-      wipe_table_data(table_name)
+      if current_tables[table_name] then
+         wipe_table_data(table_name)
+      end
    end
    current_scope.current_tables = current_tables
    check_for_overwritten_keys(prev_tables)
