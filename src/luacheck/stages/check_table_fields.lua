@@ -13,6 +13,7 @@ stage.warnings = {
 
 local function_call_tags = utils.array_to_set({"Call", "Invoke"})
 local loop_types = utils.array_to_set({"While", "Fornum", "Forin", "Repeat"})
+local branching_scope_types = utils.array_to_set({"If", "While", "Fornum", "Forin"})
 
 local function noop() end
 
@@ -23,6 +24,9 @@ local current_tables
 
 -- Stores auxiliary information about the current scope
 local current_scope
+
+-- When set to true, concludes that the file can't be understand and gives up
+local give_up_processing = false
 
 local previous_scopes = {}
 
@@ -148,26 +152,25 @@ local function maybe_warn_unused(table_info, key, set_data)
       and (not all_access_node or all_access_node.line < set_node.line)
    then
       -- if it's from a branching previous scope, don't report here
-      -- i.e. an overwrite in one "if" branch shouldn't produce a warning
+      -- i.e. an overwrite in one "if" or in a branch shouldn't produce a warning
+      local has_encountered_branching_scope = branching_scope_types[current_scope.scope_type]
       for scope_index = #previous_scopes, 1, -1 do
          local outer_scope = previous_scopes[scope_index]
          if outer_scope.current_tables[set_table_name]
             and ((outer_scope.current_tables[set_table_name].set_keys[key]
-            and outer_scope.current_tables[set_table_name].set_keys[key].key_node.line == set_node.line)
+               and outer_scope.current_tables[set_table_name].set_keys[key].key_node.line == set_node.line)
             or (outer_scope.current_tables[set_table_name].maybe_set_keys[key]
-            and outer_scope.current_tables[set_table_name].maybe_set_keys[key].key_node.line == set_node.line))
+               and outer_scope.current_tables[set_table_name].maybe_set_keys[key].key_node.line == set_node.line))
          then
             -- Between the new set and the earliest accessible set, is there an "If" scope?
-            if outer_scope.scope_type == "If" or current_scope.scope_type == "If" then
+            if has_encountered_branching_scope then
                return
             end
          else
             break
          end
-      end
-
-      if is_table_from_outside_loop(set_table_name) then
-         return
+         has_encountered_branching_scope = has_encountered_branching_scope
+            or branching_scope_types[outer_scope.scope_type]
       end
 
       -- table.insert/table.remove can push around keys internally, so use the set_node's key
@@ -309,18 +312,6 @@ local function end_table_variable(table_name)
    end
 
    current_tables[table_name] = nil
-end
-
--- Called on a new control block scope
--- Unlike end_table_variable, this assumes that any and all existing tables values
--- Can potentially be accessed later on, and so doesn't warn about unused values
-local function stop_tracking_tables()
-   for table_name in pairs(current_tables) do
-      wipe_table_data(table_name)
-   end
-
-   scopes_to_merge_at_index = {}
-   current_scope.locals = {}
 end
 
 local function on_scope_end_for_var(table_name)
@@ -771,41 +762,38 @@ local function handle_control_flow_item(item)
       -- Unless there's unreachable code, but that's reported separately
       current_scope.scope_definitely_returns = true
       return
+   elseif item.control_block_type == "Goto" or item.control_block_type == "Label" then
+      -- Will never support Goto/Label, they're too weird
+      give_up_processing = true
+   elseif not item.scope_end then
+      enter_new_scope(item.node, item.control_block_type)
    elseif item.control_block_type == "Do" then
       -- Simplest case: do doesn't lead to branching scope
-      if item.scope_end then
-         clear_locals_on_scope_end()
-         local has_return = current_scope.scope_definitely_returns
-         current_scope = table.remove(previous_scopes)
-         current_scope.scope_definitely_returns = has_return
-         current_scope.current_tables = current_tables
-      else
-         enter_new_scope(item.node, item.control_block_type)
-      end
+      clear_locals_on_scope_end()
+      local has_return = current_scope.scope_definitely_returns
+      current_scope = table.remove(previous_scopes)
+      current_scope.scope_definitely_returns = has_return
+      current_scope.current_tables = current_tables
    elseif item.control_block_type == "If" then
-      if item.scope_end then
-         clear_locals_on_scope_end()
-         local has_return = current_scope.scope_definitely_returns
-         local dest_index = current_scope.index_current_scope_jumps_to
-         if not scopes_to_merge_at_index[dest_index] then
-            scopes_to_merge_at_index[dest_index] = {
-               has_else = false,
-               always_returning_scopes = {}
-            }
-         end
-         if has_return then
-            table.insert(scopes_to_merge_at_index[dest_index].always_returning_scopes, current_scope)
-         else
-            table.insert(scopes_to_merge_at_index[dest_index], current_scope)
-         end
-         if item.is_else then
-            scopes_to_merge_at_index[dest_index].has_else = true
-         end
-         current_scope = table.remove(previous_scopes)
-         current_tables = current_scope.current_tables
-      else
-         enter_new_scope(item.node, item.control_block_type)
+      clear_locals_on_scope_end()
+      local has_return = current_scope.scope_definitely_returns
+      local dest_index = current_scope.index_current_scope_jumps_to
+      if not scopes_to_merge_at_index[dest_index] then
+         scopes_to_merge_at_index[dest_index] = {
+            has_else = false,
+            always_returning_scopes = {}
+         }
       end
+      if has_return then
+         table.insert(scopes_to_merge_at_index[dest_index].always_returning_scopes, current_scope)
+      else
+         table.insert(scopes_to_merge_at_index[dest_index], current_scope)
+      end
+      if item.is_else then
+         scopes_to_merge_at_index[dest_index].has_else = true
+      end
+      current_scope = table.remove(previous_scopes)
+      current_tables = current_scope.current_tables
    elseif loop_types[item.control_block_type] then
       -- Loops are tremendously difficult to support
       -- Because they can have an initial state that differs from the state from the block before the loop
@@ -815,24 +803,10 @@ local function handle_control_flow_item(item)
       -- Too complicated for now, so instead I'll do the dumbest way to handle it: ignore accesses
       -- to non-locals in loops, assume that table.remove can access anything and table.insert can
       -- insert anything
-      if item.scope_end then
-         -- Another simplification: *in theory*, a loop could not be entered.
-         -- *In practice*, that doesn't matter here: any logic done inside a loop can't produce false positives
-         current_scope = table.remove(previous_scopes)
-         current_scope.current_tables = current_tables
-      else
-         enter_new_scope(item.node, item.control_block_type)
-      end
-   else
-      -- Will never support Goto/Label, they're too weird
-      stop_tracking_tables()
-      if item.scope_end then
-         current_scope = table.remove(previous_scopes)
-         current_tables = current_scope.current_tables
-         stop_tracking_tables()
-      else
-         enter_new_scope(item.node, item.control_block_type)
-      end
+      -- Another simplification: *in theory*, a loop could not be entered.
+      -- *In practice*, that doesn't matter here: any logic done inside a loop can't produce false positives
+      current_scope = table.remove(previous_scopes)
+      current_scope.current_tables = current_tables
    end
 end
 
@@ -900,7 +874,9 @@ local function handle_local_or_set_item(item)
       -- Complete overwrite of previous value
       if lhs_node.var and current_tables[lhs_node.var.name] then
          -- $existing_table = $existing_table should do nothing
-         if not (rhs_node.var and rhs_node.var.name == lhs_node.var.name) then
+         if not (rhs_node.var 
+            and current_tables[rhs_node.var.name] == current_tables[lhs_node.var.name])
+         then
             end_table_variable(lhs_node.var.name)
          end
       end
@@ -1158,12 +1134,18 @@ local function detect_unused_table_fields(func_or_file_scope)
 
       item_callbacks[item.tag](item)
 
+      if give_up_processing then
+         break
+      end
+
       -- If it ends on an if...end, the jump will go to the last index + 1
       merge_scopes_at_index(item_index + 1)
    end
 
-   -- Handle implicit return
-   on_scope_end()
+   if not give_up_processing then
+      -- Handle implicit return
+      on_scope_end()
+   end
 
    current_scope = nil
    current_tables = nil
@@ -1172,6 +1154,7 @@ local function detect_unused_table_fields(func_or_file_scope)
    external_references_set = nil
    previous_scopes = {}
    scopes_to_merge_at_index = {}
+   give_up_processing = false
 end
 
 -- Warns about table fields that are never accessed

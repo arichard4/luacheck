@@ -14,6 +14,7 @@ describe("table field control flow", function()
          {line = 13, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
          {line = 18, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
          {line = 23, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
+         {line = 28, column = 6, name = 'x', end_column = 6, field = 1, code = '315', set_is_nil = ''},
          {line = 28, column = 13, name = 'x', end_column = 13, field = 'z', code = '325', },
       }, [[
 do
@@ -232,6 +233,12 @@ print(t[2])
 
 local y = {1}
 do
+   goto done
+end
+print(y[2])
+
+local z = {1}
+for _,_ in pairs(z) do
    goto done
 end
 print(y[2])

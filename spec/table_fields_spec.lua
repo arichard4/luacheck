@@ -362,6 +362,8 @@ x.x = 1
 local t = x
 t.y = 1
 t[1] = t.z
+t = t
+x = t
 return t.x
       ]])
    end)
@@ -444,6 +446,14 @@ local x = {}
 x[1] = 1
 x[2] = x[1]
 x[1] = 1
+      ]])
+   end)
+
+   it("doesn't handle metatables", function()
+      assert_warnings({}, [[
+local x = setmetatable({}, {})
+x[1] = 1
+print(x[2])
       ]])
    end)
 
